@@ -325,7 +325,7 @@ class Relayout:
         for n in sorted({n for (n, p) in self.PW}):
             if 'power:%s' % n not in embedded:
                 b = entry(n).replace('(symbol "%s"' % n, '(symbol "power:%s"' % n, 1)
-                add += '\n' + '\n'.join('\t' + ln if ln else ln for ln in b.split('\n'))
+                add += '\n\t' + '\n'.join('\t' + ln if ln else ln for ln in b.split('\n'))
         out = out[:lib_span[1] - 1] + add + '\n\t' + out[lib_span[1] - 1:]
 
         def value_off(name):
