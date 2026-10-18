@@ -1,5 +1,5 @@
 {
   "name": "kicad",
-  "description": "KiCad circuit design skills and tools",
-  "version": "0.0.1"
+  "description": "KiCad circuit design skills and tools: schematic layout engine, parts/BOM helpers, MCP safety, RP2350 notes",
+  "version": "0.1.0"
 }
