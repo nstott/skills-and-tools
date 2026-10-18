@@ -1,0 +1,13 @@
+{
+  "name": "nstott",
+  "owner": {
+    "name": "Nick Stott"
+  },
+  "plugins": [
+    {
+      "name": "kicad",
+      "source": "./kicad",
+      "description": "KiCad circuit design skills and tools"
+    }
+  ]
+}
