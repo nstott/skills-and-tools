@@ -13,6 +13,6 @@ mkdir -p "$proj/.backups"
 cp "$new" "$proj/.$(basename "$dst").tmp" && mv "$proj/.$(basename "$dst").tmp" "$dst"
 echo "installed $dst ($(wc -c <"$dst") bytes); backup in $proj/.backups/"
 need "$KICAD_CLI"
-( cd "$proj" && "$KICAD_CLI" sch erc --severity-all -o /tmp/erc-$$.rpt "$(basename "$dst")" >/dev/null 2>&1 )
+( cd "$proj" && kcli sch erc --severity-all -o /tmp/erc-$$.rpt "$(basename "$dst")" >/dev/null 2>&1 )
 grep -E '^\[' /tmp/erc-$$.rpt | sort | uniq -c || true
 echo "ERC: $(grep -c '^\[' /tmp/erc-$$.rpt) violation type(s); full report /tmp/erc-$$.rpt"

@@ -9,7 +9,7 @@ width=3400
 if [ -n "$1" ] && [ "$1" != "--crop" ]; then width="$1"; shift; fi
 need "$KICAD_CLI"; need rsvg-convert
 mkdir -p "$out"; rm -rf "$out/svg"
-"$KICAD_CLI" sch export svg -o "$out/svg" "$f" >/dev/null || die "kicad-cli export failed"
+kcli sch export svg -o "$out/svg" "$f" >/dev/null || die "kicad-cli export failed"
 svg=$(ls "$out"/svg/*.svg | head -1)
 rsvg-convert -w "$width" -b white "$svg" -o "$out/sheet.png"
 echo "$out/sheet.png"

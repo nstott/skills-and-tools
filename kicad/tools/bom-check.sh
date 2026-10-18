@@ -5,7 +5,7 @@
 f="$1"; [ -f "$f" ] || die "usage: bom-check.sh FILE.kicad_sch"
 need "$KICAD_CLI"
 csv=$(mktemp -t bom).csv
-"$KICAD_CLI" sch export bom --fields 'Reference,Value,Footprint,LCSC,MPN' --group-by 'Value,Footprint,LCSC' \
+kcli sch export bom --fields 'Reference,Value,Footprint,LCSC,MPN' --group-by 'Value,Footprint,LCSC' \
   --exclude-dnp -o "$csv" "$f" >/dev/null || die "bom export failed"
 cat "$csv"
 echo "--- missing LCSC (PWR_FLAG ignored):"
