@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Prints the path of a python with pypdf + pillow (creates ~/.cache/nstott-tools/venv on first use).
+set -e
+V="${NSTOTT_VENV:-$HOME/.cache/nstott-tools/venv}"
+if [ ! -x "$V/bin/python" ]; then
+  python3 -m venv "$V" >&2
+  "$V/bin/pip" install -q pypdf pillow >&2
+fi
+echo "$V/bin/python"
