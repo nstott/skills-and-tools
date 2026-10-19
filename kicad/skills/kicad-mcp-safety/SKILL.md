@@ -28,6 +28,8 @@ For layout, power symbols, wires, field changes across many parts, generate the 
 - `register_symbol_library` writes `lib/sym-lib-table`, not the project root table. Add the entry to the root
   `sym-lib-table` / `fp-lib-table` yourself using `${KIPRJMOD}/lib/...`, and delete the stray file.
 - `batch_connect` draws a **diagonal** wire when it sees a facing label nearby. A relayout removes them.
+- `kicad-cli` is not on PATH. Use `. ${CLAUDE_PLUGIN_ROOT}/tools/_env.sh` and `kcli ...`, or the full path
+  `/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli`.
 - `run_erc` through the MCP can report 0 while KiCad's own ERC finds problems (pins mid-wire); cross-check with
   `kicad-cli sch erc`.
 - `list_schematic_nets` only shows nets named by labels, not nets named only by power symbols.
