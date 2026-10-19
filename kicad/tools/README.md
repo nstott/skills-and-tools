@@ -11,6 +11,7 @@ Scripts the skills call via `${CLAUDE_PLUGIN_ROOT}/tools/...`. Paths and tool lo
 | `bom-check.sh FILE` | Grouped BOM with LCSC/MPN; lists parts missing an LCSC number. |
 | `jlc_find.py` | Query the local JLCPCB parts DB (`--mfr`, `--lcsc`, `--passive`, `--sql`, `--basic`). |
 | `jlc-load-db.sh` | Load the JLCPCB catalogue outside the MCP's 30 s timeout. |
+| `pcb-sync-from-sch.py SCH PCB [--place REF=X,Y[,ROT]] [--dry-run]` | File-level "Update PCB from Schematic": sets the value and the net of every pad from the `kicad-cli` netlist (names match KiCad's own), adds missing footprints from the project/KiCad libraries linked to their symbol, never deletes. Refuses while KiCad has the board open (`.lck`); backup in `.backups/`. Use instead of the MCP `sync_schematic_to_board`, which renames nets and drops pads. |
 | `kicad-mcp-restart.sh [--dry-run]` | Restart this session's KiCad MCP python backend only. |
 | `pdf_extract.py` + `venv-python` | Datasheet text and embedded images (land patterns). venv at `~/.cache/nstott-tools/venv`. |
 
