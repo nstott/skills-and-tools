@@ -9,6 +9,7 @@ Scripts the skills call via `${CLAUDE_PLUGIN_ROOT}/tools/...`. Paths and tool lo
 | `sch-install.sh NEW PROJECT_DIR` | Timestamped backup in `PROJECT_DIR/.backups`, atomic replace, then `kicad-cli` ERC. |
 | `kicad-render.sh FILE OUTDIR [W] [--crop X Y W H]` | Schematic to PNG (+ crop) for visual checks. |
 | `bom-check.sh FILE` | Grouped BOM with LCSC/MPN; lists parts missing an LCSC number. |
+| `proj-find.py TEXT [--root DIR] [--parts\|--labels]` | Find a part, value, LCSC/MPN, symbol or net label across sibling KiCad projects (default root: the parent of the project you are in). Answers "which project has the USB-C / SS14 / VBUS_SENSE". |
 | `jlc_find.py` | Query the local JLCPCB parts DB (`--mfr`, `--lcsc`, `--passive`, `--sql`, `--basic`). |
 | `jlc-load-db.sh` | Load the JLCPCB catalogue outside the MCP's 30 s timeout. |
 | `kicad-mcp-restart.sh [--dry-run]` | Restart this session's KiCad MCP python backend only. |
