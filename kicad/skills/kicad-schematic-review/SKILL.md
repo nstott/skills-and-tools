@@ -15,6 +15,8 @@ Work through these in order; report findings with ref/pin, don't just say "looks
   accidental merges (two names on one net), unnamed nets on important signals, pins on `GND` that should not be.
 - Render and read it: `${CLAUDE_PLUGIN_ROOT}/tools/kicad-render.sh FILE outdir 6800`.
 - BOM: `${CLAUDE_PLUGIN_ROOT}/tools/bom-check.sh FILE` - every assembled part has LCSC/MPN, footprints resolve.
+- Schematic vs PCB (when a `.kicad_pcb` exists): `${CLAUDE_PLUGIN_ROOT}/tools/sch-pcb-diff.py FILE.kicad_sch FILE.kicad_pcb` - parts,
+  values, footprints and the net on every pad must agree; any difference means "Update PCB from Schematic" is pending.
 
 ## 2. Design review checklist
 - **Power**: every supply pin on its rail; each rail has a source (power_out pin or PWR_FLAG); regulator input/output
