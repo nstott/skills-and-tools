@@ -8,6 +8,7 @@ Scripts the skills call via `${CLAUDE_PLUGIN_ROOT}/tools/...`. Paths and tool lo
 | `kicad_sch/` | Python package. `relayout.py` layout engine (wires, power symbols, labels, verified + atomic write); `netlist.py` + `python3 -m kicad_sch nets / diff-nets`. Needs `PYTHONPATH=<this folder>`. Example spec: `kicad_sch/examples/rp2350_devboard_layout.py`. |
 | `sch-install.sh NEW PROJECT_DIR` | Timestamped backup in `PROJECT_DIR/.backups`, atomic replace, then `kicad-cli` ERC. |
 | `kicad-render.sh FILE OUTDIR [W] [--crop X Y W H]` | Schematic to PNG (+ crop) for visual checks. |
+| `sch-set-field.py FILE REF FIELD VALUE [...]` | Set symbol fields (Value, LCSC, MPN, ...) by editing the file text: refuses while KiCad holds the `.lck`, timestamped backup in `.backups/`, atomic write, aborts if net connectivity would change. `--dry-run`, `--force`. Use instead of the MCP for field-only edits. |
 | `bom-check.sh FILE` | Grouped BOM with LCSC/MPN; lists parts missing an LCSC number. |
 | `jlc_find.py` | Query the local JLCPCB parts DB (`--mfr`, `--lcsc`, `--passive`, `--sql`, `--basic`). |
 | `jlc-load-db.sh` | Load the JLCPCB catalogue outside the MCP's 30 s timeout. |
