@@ -16,6 +16,7 @@ Checks (each finding names the part / net / pin and the sheet position in mm):
   datasheets   active parts to check against their datasheet's application circuit (see kicad-schematic-review)
 """
 import json
+import math
 import os
 import re
 import sqlite3
@@ -34,6 +35,8 @@ KICAD_CLI = os.environ.get('KICAD_CLI', '/Applications/KiCad/KiCad.app/Contents/
 JLC_DB = os.environ.get('JLC_DB', os.path.expanduser('~/Library/Application Support/kicad-mcp/jlcpcb_parts.db'))
 GND_NAME = re.compile(r'^/?(GND|AGND|DGND|PGND|GNDA|GNDD|VSS|0V)$', re.I)
 ACTIVE = re.compile(r'^(U|IC|Q|X|Y|D|LED|L|F|J|SW)\d')
+CHAR_W = 0.9           # KiCad default font: measured ~0.9 x text size per character (digits and caps)
+SMALL_BODY = 40.0      # mm^2: a symbol body smaller than this (passives) must not carry its own text inside it
 
 
 def rail_volts(net):
@@ -103,6 +106,54 @@ def jlc_desc(lcsc):
         return None
 
 
+def lib_graphics(text, lib_span):
+    """{lib_id: (body_points, pin_segments)} in symbol units (y up): drawing points of every unit, and each pin's line."""
+    out = {}
+    for sp in children(text, lib_span):
+        if block_head(text, sp) != 'symbol':
+            continue
+        lid = re.match(r'\(symbol "([^"]+)"', text[sp[0]:sp[1]]).group(1)
+        pts, pins = [], []
+        for sub in children(text, sp):
+            if block_head(text, sub) != 'symbol':
+                continue
+            for g in children(text, sub):
+                h, gb = block_head(text, g), text[g[0]:g[1]]
+                if h == 'pin':
+                    m = re.search(r'\(at ([-\d.]+) ([-\d.]+) ([-\d.]+)\)', gb)
+                    ln = float((re.search(r'\(length ([-\d.]+)\)', gb) or [0, 0])[1])
+                    x, y, a = float(m.group(1)), float(m.group(2)), math.radians(float(m.group(3)))
+                    pins.append(((x, y), (x + ln * math.cos(a), y + ln * math.sin(a))))
+                elif h in ('rectangle', 'polyline', 'arc', 'bezier'):
+                    pts += [(float(a), float(b)) for a, b in re.findall(r'\((?:start|end|mid|xy) ([-\d.]+) ([-\d.]+)\)', gb)]
+                elif h == 'circle':
+                    c = re.search(r'\(center ([-\d.]+) ([-\d.]+)\)', gb)
+                    r = float(re.search(r'\(radius ([-\d.]+)\)', gb).group(1))
+                    cx, cy = float(c.group(1)), float(c.group(2))
+                    pts += [(cx - r, cy - r), (cx + r, cy + r)]
+        out[lid] = (pts, pins)
+    return out
+
+
+def place(pt, x, y, rot, mirror):
+    px, py = pt
+    if mirror == 'y':
+        px = -px
+    elif mirror == 'x':
+        py = -py
+    th = math.radians(rot)
+    return (x + px * math.cos(th) - py * math.sin(th), y - (px * math.sin(th) + py * math.cos(th)))
+
+
+def box_hits_segment(bx, a, b, step=0.15):
+    n = max(1, int(math.hypot(b[0] - a[0], b[1] - a[1]) / step))
+    for i in range(n + 1):
+        x, y = a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n
+        if bx[0] < x < bx[2] and bx[1] < y < bx[3]:
+            return True
+    return False
+
+
 def text_boxes(text):
     """Approximate boxes of visible symbol fields and labels: (owner, kind, x0, y0, x1, y1, string)."""
     boxes = []
@@ -112,12 +163,16 @@ def text_boxes(text):
             ref = re.search(r'\(property "Reference" "([^"]*)"', b).group(1)
             if ref.startswith('#'):
                 continue
-            for m in re.finditer(r'\(property "(Reference|Value)" "([^"]*)"\s*\(at ([-\d.]+) ([-\d.]+) ([-\d.]+)\)(.*?)\n\t\t\)', b, re.S):
+            # a field is drawn at its own angle plus the symbol's rotation
+            srot = float(re.search(r'\n\t\t\(at [-\d.]+ [-\d.]+ ([-\d.]+)\)', b).group(1))
+            for m in re.finditer(r'\(property "([^"]+)" "([^"]*)"\s*\(at ([-\d.]+) ([-\d.]+) ([-\d.]+)\)(.*?)\n\t\t\)', b, re.S):
+                if not m.group(2):
+                    continue
                 if '(hide yes)' in m.group(6):
                     continue
-                s, x, y, ang = m.group(2), float(m.group(3)), float(m.group(4)), float(m.group(5))
+                s, x, y, ang = m.group(2), float(m.group(3)), float(m.group(4)), float(m.group(5)) + srot
                 size = float((re.search(r'\(size ([\d.]+)', m.group(6)) or [0, 1.27])[1])
-                w, hgt = 0.6 * size * len(s), size
+                w, hgt = CHAR_W * size * len(s), size
                 if int(round(ang)) % 180 == 90:
                     w, hgt = hgt, w
                 just = re.search(r'\(justify ([^)]*)\)', m.group(6))
@@ -132,7 +187,7 @@ def text_boxes(text):
         elif h in ('label', 'global_label'):
             m = re.match(r'\(%s "([^"]*)"\s*(?:\(shape [^)]*\)\s*)?\(at ([-\d.]+) ([-\d.]+) ([-\d.]+)\)' % h, b)
             s, x, y, ang = m.group(1), float(m.group(2)), float(m.group(3)), int(float(m.group(4)))
-            w, hgt = 0.6 * 1.27 * len(s), 1.27
+            w, hgt = CHAR_W * 1.27 * len(s), 1.27
             if ang == 0:
                 bx = (x, y - hgt, x + w, y)
             elif ang == 180:
@@ -299,21 +354,50 @@ def main():
         if missing and not re.match(r'^(H|TP|MH|FID)\d', r):
             flag('fields', 'warn', '%s (%s): missing %s' % (r, info['value'], ', '.join(missing)), r)
 
-    # --- overlapping texts
+    # --- overlapping text: text vs text, vs symbol bodies and pins, vs wires (approximate boxes)
     boxes = text_boxes(text)
-    hits = 0
+    graphics = lib_graphics(text, sh.lib_span)
+    bodies, pinsegs = [], []
+    for s in sh.symbols:
+        pts, pins = graphics.get(s['lib_id'], ([], []))
+        if pts:
+            q = [place(p, s['x'], s['y'], s['rot'], s['mirror']) for p in pts]
+            xs, ys = [p[0] for p in q], [p[1] for p in q]
+            bodies.append((s['ref'], (min(xs), min(ys), max(xs), max(ys))))
+        for p1, p2 in pins:
+            pinsegs.append((s['ref'], place(p1, s['x'], s['y'], s['rot'], s['mirror']), place(p2, s['x'], s['y'], s['rot'], s['mirror'])))
+    shown = []
+
+    def hit(kind, msg, at):
+        shown.append(dict(check='overlap', severity='warn', at=(round(at[0], 1), round(at[1], 1)), msg=msg + ' [approx]'))
+
+    m = 0.2  # ignore grazes under 0.2 mm (the boxes are estimates)
     for i in range(len(boxes)):
+        A = boxes[i]
         for j in range(i + 1, len(boxes)):
-            A, B = boxes[i], boxes[j]
-            if A[0] == B[0]:
-                continue
-            if A[2] < B[4] - 0.05 and B[2] < A[4] - 0.05 and A[3] < B[5] - 0.05 and B[3] < A[5] - 0.05:
-                hits += 1
-                if hits <= 12:
-                    findings.append(dict(check='overlap', severity='warn', at=(round(A[2], 1), round(A[3], 1)),
-                                         msg='"%s" (%s %s) overlaps "%s" (%s %s) [approx]' % (A[6], A[0], A[1], B[6], B[0], B[1])))
-    if hits > 12:
-        flag('overlap', 'warn', '... %d more overlapping text pairs' % (hits - 12))
+            B = boxes[j]
+            if A[0] != B[0] and A[2] < B[4] - m and B[2] < A[4] - m and A[3] < B[5] - m and B[3] < A[5] - m:
+                hit('text', '"%s" (%s %s) overlaps "%s" (%s %s)' % (A[6], A[0], A[1], B[6], B[0], B[1]), (A[2], A[3]))
+        inner = (A[2] + m, A[3] + m, A[4] - m, A[5] - m)
+        for ref, bb in bodies:
+            area = (bb[2] - bb[0]) * (bb[3] - bb[1])
+            if ref == A[0] and area >= SMALL_BODY:
+                continue  # an IC's own reference/value inside its box is normal
+            if inner[0] < bb[2] and bb[0] < inner[2] and inner[1] < bb[3] and bb[1] < inner[3]:
+                who = 'its own symbol body' if ref == A[0] else 'the body of %s' % ref
+                hit('body', '"%s" (%s %s) sits on %s' % (A[6], A[0], A[1], who), (A[2], A[3]))
+        for ref, p1, p2 in pinsegs:
+            if ref != A[0] and box_hits_segment(inner, p1, p2):
+                hit('pin', '"%s" (%s %s) crosses a pin of %s' % (A[6], A[0], A[1], ref), (A[2], A[3]))
+                break
+        if A[1] != 'label':
+            for (p1, p2) in wires:
+                if box_hits_segment(inner, p1, p2):
+                    hit('wire', '"%s" (%s %s) crosses a wire' % (A[6], A[0], A[1]), (A[2], A[3]))
+                    break
+    findings += shown[:25]
+    if len(shown) > 25:
+        flag('overlap', 'warn', '... %d more overlaps' % (len(shown) - 25))
 
     # --- datasheet checklist
     for r, info in sorted(comps.items()):
