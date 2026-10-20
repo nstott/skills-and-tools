@@ -60,6 +60,11 @@ Flag every place the sheet departs from these:
   **Re-run `sch-quality.py` after every edit that changes text** (values, new fields, moved or added parts, labels) and
   look at a render of the changed area; a longer value overlaps neighbours that were clear before. Put ratings in a
   visible `Voltage` field under the value, not in the value itself (`10uF` + `25V`), so rows of parts stay readable.
+- **Symbols**: pins that share a function (several GND pins, an exposed pad) are stacked the standard KiCad way: one
+  visible pin, the others at the same point hidden and *passive*, so only one number prints. A hidden *power input*
+  pin is a trap: KiCad joins it to a global net named after the pin whatever it is wired to (`pins`). A project symbol's
+  name, description and keywords must describe the part actually on the BOM (no `-33` fixed-voltage name on an
+  adjustable part).
 - **Names for what you would probe**: every clock, enable, sense, switch node and bus is named (`net-names`); no
   `Net-(U1-Pad58)` on anything you might scope.
 - **Values carry what matters**: voltage on bulk caps, tolerance where it matters (dividers, feedback), power on current
