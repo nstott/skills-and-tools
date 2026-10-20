@@ -13,6 +13,8 @@ Checks (each finding names the part / net / pin and the sheet position in mm):
   ratings      bulk caps (>=1 uF): voltage rating vs the rail (DC-bias derating), rating shown in the value
   fields       footprint, LCSC and MPN on every assembled part; unannotated or duplicate references
   overlap      visible texts (reference, value, labels) that overlap (approximate boxes)
+  pins         symbols with several visible pins at one point (their numbers print on top of each other) and hidden
+               power-input pins (KiCad joins those to a global net named after the pin)
   datasheets   active parts to check against their datasheet's application circuit (see kicad-schematic-review)
 """
 import json
@@ -398,6 +400,43 @@ def main():
     findings += shown[:25]
     if len(shown) > 25:
         flag('overlap', 'warn', '... %d more overlaps' % (len(shown) - 25))
+
+    # --- stacked and hidden pins in the symbols used on the sheet
+    used = defaultdict(list)
+    for s in sh.symbols:
+        if not s['ref'].startswith('#'):
+            used[s['lib_id']].append(s['ref'])
+    for sp in children(text, sh.lib_span):
+        if block_head(text, sp) != 'symbol':
+            continue
+        lid = re.match(r'\(symbol "([^"]+)"', text[sp[0]:sp[1]]).group(1)
+        if lid not in used:
+            continue
+        at_pt = defaultdict(list)
+        for sub in children(text, sp):
+            if block_head(text, sub) != 'symbol':
+                continue
+            unit = re.match(r'\(symbol "[^"]*_(\d+)_\d+"', text[sub[0]:sub[1]])
+            for pin in children(text, sub):
+                if block_head(text, pin) != 'pin':
+                    continue
+                b = text[pin[0]:pin[1]]
+                ptype = re.match(r'\(pin (\w+)', b).group(1)
+                hidden = '(hide yes)' in b.split('(name')[0]
+                num = re.search(r'\(number "([^"]*)"', b).group(1)
+                name = re.search(r'\(name "([^"]*)"', b).group(1)
+                xy = re.search(r'\(at ([-\d.]+) ([-\d.]+)', b).groups()
+                at_pt[(unit.group(1) if unit else '0', xy)].append((num, name, hidden))
+                if hidden and ptype == 'power_in':
+                    flag('pins', 'warn', '%s pin %s (%s) is a hidden power input: KiCad connects it to a global net "%s" '
+                         'whatever it is wired to; make it passive (stacked under a visible pin) or visible' % (
+                             lid, num, name, name), used[lid][0])
+        for (unit, xy), ps in at_pt.items():
+            vis = [p_ for p_ in ps if not p_[2]]
+            if len(vis) > 1:
+                flag('pins', 'warn', '%s (%s): pins %s are stacked at one point and all visible, so their numbers print on top '
+                     'of each other; keep one visible and hide the others (passive)' % (
+                         lid, ','.join(used[lid]), '/'.join(p_[0] for p_ in vis)), used[lid][0])
 
     # --- datasheet checklist
     for r, info in sorted(comps.items()):
