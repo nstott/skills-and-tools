@@ -10,7 +10,9 @@ the board outline). Net names come from `kicad-cli sch export netlist`, so they 
 (`/GP0`, `Net-(U1-XOUT)`, `unconnected-(J1-SBU1-PadA8)`). Copper follows the pads: when every pad of an old net
 moves to one new net (a net renamed or newly labelled in the schematic) its tracks, vias and zones are renamed too;
 when a pad leaves a net that still exists (e.g. FB moved off +3V3 onto a divider) the old net's tracks ending on that
-pad, and the dead-end chain behind them, are deleted so the router can re-route it. Footprints are never removed: board-only footprints (mounting
+pad, and the dead-end chain behind them, are deleted so the router can re-route it. A footprint changed in the
+schematic is rebuilt from the library in place (same position, rotation and schematic link; front side only).
+Footprints are never removed: board-only footprints (mounting
 holes) and footprints whose symbol is gone are listed. Refuses while KiCad has the board open (`~NAME.kicad_pcb.lck`)
 unless --force. Timestamped backup in `.backups/`, atomic write.
 
@@ -288,6 +290,21 @@ def main():
         matched.add(rec['ref'])
         sp = rec['span']
         b = text[sp[0]:sp[1]]
+        have_fp = re.match(r'\(footprint "([^"]+)"', b).group(1)
+        if p['footprint'] and have_fp.split(':')[-1] != p['footprint'].split(':')[-1]:
+            # footprint changed in the schematic: rebuild it from the library in place (same position, rotation and
+            # schematic link); tracks that ended on the old pads are kept, DRC/the router judge whether they still fit
+            at = re.search(r'\n\t\t\(at ([-\d.]+) ([-\d.]+)(?: ([-\d.]+))?\)', b)
+            if '(layer "B.Cu")' in b.split('\n')[1]:
+                report.append('%s: footprint %s -> %s NOT swapped: the part is on the back; flip it to the front, re-run, '
+                              'then flip back' % (ref, have_fp, p['footprint']))
+                continue
+            x, y, rot = float(at.group(1)), float(at.group(2)), float(at.group(3) or 0)
+            blk = footprint_from_mod(p['footprint'], ref, p['value'], p['uuid'], (x, y, rot), d, p['pads'])
+            blk, ch = set_pad_nets(blk.lstrip('\t'), p['pads'])
+            report.append('SWAP %s %s -> %s at %s,%s rot %s (%d pads)' % (ref, have_fp, p['footprint'], x, y, rot, len(ch)))
+            edits.append(('rep', sp, blk))
+            continue
         b2, ch = set_pad_nets(b, p['pads'])
         vm = re.search(r'\(property "Value" "((?:[^"\\]|\\.)*)"', b2)
         if vm and vm.group(1) != p['value']:
