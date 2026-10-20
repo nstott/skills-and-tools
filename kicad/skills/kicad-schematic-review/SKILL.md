@@ -55,7 +55,11 @@ Flag every place the sheet departs from these:
 - **Wires for local, labels for long**: a part's own decoupling, pull-ups, crystal and feedback network are wired to it;
   labels only between blocks. A sheet that is mostly labels hides topology (`wiring`).
 - **Power symbols for rails**, decoupling drawn beside the pins it serves, one cap per pin group so the count is visible.
-- **No 4-way junctions**, dots only where wires join, no wire through a pin, everything on grid, no overlapping text.
+- **No 4-way junctions**, dots only where wires join, no wire through a pin, everything on grid, no overlapping text:
+  text must not touch other text, any symbol body or pin (its own body too, for passives) or a wire (`overlap`).
+  **Re-run `sch-quality.py` after every edit that changes text** (values, new fields, moved or added parts, labels) and
+  look at a render of the changed area; a longer value overlaps neighbours that were clear before. Put ratings in a
+  visible `Voltage` field under the value, not in the value itself (`10uF` + `25V`), so rows of parts stay readable.
 - **Names for what you would probe**: every clock, enable, sense, switch node and bus is named (`net-names`); no
   `Net-(U1-Pad58)` on anything you might scope.
 - **Values carry what matters**: voltage on bulk caps, tolerance where it matters (dividers, feedback), power on current
