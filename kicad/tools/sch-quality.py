@@ -13,6 +13,8 @@ Checks (each finding names the part / net / pin and the sheet position in mm):
   ratings      bulk caps (>=1 uF): voltage rating vs the rail (DC-bias derating), rating shown in the value
   fields       footprint, LCSC and MPN on every assembled part; unannotated or duplicate references
   overlap      visible texts (reference, value, labels) that overlap (approximate boxes)
+  identity     what a part *is* must agree everywhere: symbol name / description / keywords, Value, MPN, the JLCPCB
+               catalogue entry for its LCSC number (part number, fixed vs adjustable, package) and the footprint
   pins         symbols with several visible pins at one point (their numbers print on top of each other) and hidden
                power-input pins (KiCad joins those to a global net named after the pin)
   datasheets   active parts to check against their datasheet's application circuit (see kicad-schematic-review)
@@ -101,11 +103,49 @@ def jlc_desc(lcsc):
         return None
     try:
         con = sqlite3.connect('file:%s?mode=ro' % JLC_DB, uri=True)
-        r = con.execute('select description, datasheet from components where lcsc = ?', (lcsc,)).fetchone()
+        r = con.execute('select description, datasheet, mfr_part, package from components where lcsc = ?', (lcsc,)).fetchone()
         con.close()
         return r
     except sqlite3.Error:
         return None
+
+
+GENERIC_LIBS = ('Device', 'power', 'Connector', 'Connector_Generic', 'Switch', 'Mechanical', 'Jumper')
+CHIP_SIZES = ('01005', '0201', '0402', '0603', '0805', '1206', '1210', '1812', '2010', '2512', '1608', '2012', '3216',
+              '2016', '2520', '3225', '5032', '7050')
+FAMILIES = ('SOIC', 'SSOP', 'TSSOP', 'MSOP', 'SOP', 'QFN', 'DFN', 'WSON', 'VSON', 'SON', 'SOT-23', 'SOT-223', 'SOT-89',
+            'LQFP', 'TQFP', 'QFP', 'BGA', 'SMA', 'SMB', 'SMC', 'SOD-123', 'SOD-323', 'DO-214')
+
+
+def norm_pn(s):
+    return re.sub(r'[^A-Z0-9]', '', (s or '').upper())
+
+
+def package_traits(s):
+    """(family, pins, size code) read from a footprint name or a catalogue package string."""
+    u = (s or '').upper().replace('_', '-')
+    fam = next((f for f in FAMILIES if f in u), None)
+    if fam in ('SON', 'WSON', 'VSON', 'DFN'):
+        fam = 'DFN/SON'
+    if fam in ('SOP',):
+        fam = 'SOIC'  # SOP-8 and SOIC-8 name the same package at most fabs
+    m = re.search(r'(?:SOIC|SSOP|TSSOP|MSOP|SOP|QFN|DFN|WSON|VSON|SON|SOT-23|LQFP|TQFP|QFP)-(\d+)', u) or re.search(r'-(\d+)(?:PIN|P\b)', u)
+    pins = int(m.group(1)) if m else None
+    size = next((c for c in CHIP_SIZES if re.search(r'(?<!\d)%s(?!\d)' % c, u)), None)
+    return fam, pins, size
+
+
+def lib_props(text, lib_span):
+    """{lib_id: {Description, ki_keywords, ...}} from the schematic's embedded library."""
+    out = {}
+    for sp in children(text, lib_span):
+        if block_head(text, sp) != 'symbol':
+            continue
+        b = text[sp[0]:sp[1]]
+        lid = re.match(r'\(symbol "([^"]+)"', b).group(1)
+        head = b.split('\n\t\t\t(symbol "')[0]
+        out[lid] = dict(re.findall(r'\(property "([^"]+)" "((?:[^"\\]|\\.)*)"', head))
+    return out
 
 
 def lib_graphics(text, lib_span):
@@ -400,6 +440,62 @@ def main():
     findings += shown[:25]
     if len(shown) > 25:
         flag('overlap', 'warn', '... %d more overlaps' % (len(shown) - 25))
+
+    # --- part identity: symbol, value, MPN, catalogue entry and footprint must describe the same part
+    lprops = lib_props(text, sh.lib_span)
+    lib_of = {s['ref']: s['lib_id'] for s in sh.symbols}
+    for r, info in sorted(comps.items()):
+        lid = lib_of.get(r, info['lib'])
+        if r.startswith('#') or info['dnp'] or not lid or lid.split(':')[0] == 'power':
+            continue
+        lib, _, sym = lid.partition(':')
+        mpn = info['fields'].get('MPN', '')
+        lcsc = info['fields'].get('LCSC', '')
+        d = jlc_desc(lcsc)
+        cat_desc, cat_pn, cat_pkg = (d[0], d[2], d[3]) if d else ('', '', '')
+        lp = lprops.get(lid, {})
+        sym_desc = lp.get('Description', '')
+        first = sym_desc.split('. ')[0]
+        kw = lp.get('ki_keywords', '')
+        # 1. LCSC number and MPN name the same part
+        if cat_pn and mpn and norm_pn(cat_pn) not in norm_pn(mpn) and norm_pn(mpn) not in norm_pn(cat_pn):
+            flag('identity', 'bad', '%s: MPN %s but LCSC %s is %s' % (r, mpn, lcsc, cat_pn), r)
+        # 2. a part-specific symbol's variant suffix must be in the MPN (RT6150B-33 vs RT6150BGQW)
+        if lib not in GENERIC_LIBS and mpn:
+            m = re.search(r'-((?:\d+(?:\.\d+)?V?\d*)|ADJ|A)$', sym, re.I)
+            if m and norm_pn(m.group(1)) not in norm_pn(mpn):
+                flag('identity', 'warn', '%s: symbol %s carries variant "-%s" that the fitted MPN %s does not: rename the '
+                     'symbol or fit that variant' % (r, sym, m.group(1), mpn), r)
+            base = norm_pn(re.sub(r'-[^-]*$', '', sym)) if m else norm_pn(sym)
+            if len(base) >= 4 and re.search(r'\d', base) and base[:4] != norm_pn(mpn)[:4]:
+                flag('identity', 'warn', '%s: symbol %s and MPN %s look like different parts' % (r, sym, mpn), r)
+        # 3. fixed vs adjustable output
+        sym_side = ' '.join((sym, first, kw)).lower()
+        sym_fixed = bool(re.search(r'\bfixed\b', sym_side)) or bool(re.search(r'-\d{2}$|-\d\.\dv?$', sym.lower()))
+        sym_adj = bool(re.search(r'\badj(ustable)?\b', sym_side))
+        cat = cat_desc.lower()
+        if cat:
+            if sym_fixed and 'adjustable' in cat:
+                flag('identity', 'bad', '%s: symbol says fixed output (%s) but %s (LCSC %s) is ADJUSTABLE: it needs a feedback '
+                     'divider; check FB wiring' % (r, sym, cat_pn or mpn, lcsc), r)
+            if sym_adj and re.search(r'\bfixed\b', cat):
+                flag('identity', 'bad', '%s: symbol says adjustable but %s (LCSC %s) is a FIXED-output part' % (r, cat_pn or mpn, lcsc), r)
+        # 4. footprint package vs the catalogue package
+        if cat_pkg and info['footprint']:
+            ff, fp_pins, fs = package_traits(info['footprint'].split(':')[-1])
+            cf, cp_pins, cs = package_traits(cat_pkg)
+            if fp_pins and cp_pins and fp_pins != cp_pins:
+                flag('identity', 'bad', '%s: footprint %s has %d pins, catalogue package %s has %d' % (
+                    r, info['footprint'], fp_pins, cat_pkg, cp_pins), r)
+            if fs and cs and fs != cs and not ({fs, cs} <= {'0402', '1005'} or {fs, cs} <= {'0603', '1608'} or {fs, cs} <= {'0805', '2012'} or {fs, cs} <= {'1206', '3216'}):
+                flag('identity', 'bad', '%s: footprint size %s but catalogue package %s (%s)' % (r, fs, cs, cat_pkg), r)
+            if ff and cf and ff != cf:
+                flag('identity', 'warn', '%s: footprint family %s vs catalogue package %s' % (r, ff, cat_pkg), r)
+        # 5. a Value that is a part number must be the fitted part
+        val = info['value']
+        if mpn and lib not in ('Device', 'power') and re.search(r'[A-Z]{2,}\d', val.upper()) and not re.search(r'\s', val):
+            if norm_pn(val)[:5] != norm_pn(mpn)[:5]:
+                flag('identity', 'warn', '%s: Value %s names a different part from MPN %s' % (r, val, mpn), r)
 
     # --- stacked and hidden pins in the symbols used on the sheet
     used = defaultdict(list)
