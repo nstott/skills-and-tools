@@ -231,10 +231,118 @@ def rename_and_rip(text, report):
             kill.add(i)
             frontier += [q for q in cu[i]['pts'] if k(q) != k(p)]
         report.append('RIP %s copper on %s pad %s (pad moved to %s): %d item(s)' % (old, re.search(r'\(property "Reference" "([^"]*)"', blk).group(1), num, new, len(kill) - before))
+    ripped = {cu[i]['net'] for i in kill}
     for i in sorted(kill, key=lambda i: -cu[i]['span'][0]):
         a, b = cu[i]['span']
         text = text[:a] + text[b:]
     text = re.sub(r'\n\t\n', '\n', text)
+    for net in sorted(ripped):
+        text = prune_dangling(text, net, report)
+    return text
+
+
+def net_anchors(text, net):
+    """Pad boxes (x, y, half_w, half_h, layers) of every pad on `net`, and the copper layers with a zone of `net`."""
+    pads = []
+    for sp in children(text, (0, len(text))):
+        if block_head(text, sp) != 'footprint':
+            continue
+        b = text[sp[0]:sp[1]]
+        for p in children(b, (0, len(b))):
+            if block_head(b, p) != 'pad':
+                continue
+            pb = b[p[0]:p[1]]
+            if '(net "%s")' % net not in pb:
+                continue
+            num = re.match(r'\(pad "([^"]*)"', pb).group(1)
+            layers = re.findall(r'"([^"]+\.Cu|\*\.Cu)"', re.search(r'\(layers ([^)]*)\)', pb).group(1))
+            pads += [bx + (layers,) for bx in pad_boxes(b, num)]
+    zone_layers = set()
+    for sp in children(text, (0, len(text))):
+        if block_head(text, sp) == 'zone' and '(net "%s")' % net in text[sp[0]:sp[1]]:
+            zone_layers |= set(re.findall(r'"([^"]+\.Cu)"', re.search(r'\(layers? ([^)]*)\)', text[sp[0]:sp[1]]).group(1)))
+    return pads, zone_layers
+
+
+def prune_dangling(text, net, report):
+    """After a rip, remove what it left hanging on `net`: vias that no longer join two things, and track ends that
+    touch nothing (a segment is trimmed back to the last point where other copper joins it, or deleted). Copper ending
+    in the net's own zone is a plane tap and stays."""
+    pads, zone_layers = net_anchors(text, net)
+    def on_pad(p, layer):
+        return any(abs(p[0] - x) <= w + 0.01 and abs(p[1] - y) <= h + 0.01 and (layer in ls or '*.Cu' in ls)
+                   for x, y, w, h, ls in pads)
+    def near(a, b):
+        return abs(a[0] - b[0]) < 0.005 and abs(a[1] - b[1]) < 0.005
+    def on_interior(p, a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L2 = dx * dx + dy * dy
+        if L2 < 1e-12:
+            return False
+        u = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2
+        if u <= 1e-6 or u >= 1 - 1e-6:
+            return False
+        return math.hypot(a[0] + u * dx - p[0], a[1] + u * dy - p[1]) < 0.005
+    removed = trimmed = 0
+    for _ in range(50):
+        segs, vias = [], []
+        for sp in children(text, (0, len(text))):
+            h = block_head(text, sp)
+            b = text[sp[0]:sp[1]]
+            if h not in ('segment', 'via') or '(net "%s")' % net not in b:
+                continue
+            if h == 'via':
+                m = re.search(r'\(at ([-\d.]+) ([-\d.]+)\)', b)
+                vias.append((sp, (float(m.group(1)), float(m.group(2)))))
+            else:
+                pts = [(float(a), float(c)) for a, c in re.findall(r'\((?:start|end) ([-\d.]+) ([-\d.]+)\)', b)]
+                segs.append((sp, pts[0], pts[1], re.search(r'\(layer "([^"]+)"\)', b).group(1)))
+        change = None
+        for sp, v in vias:
+            joins = sum(1 for _, a, b, _ in segs if near(v, a) or near(v, b) or on_interior(v, a, b))
+            joins += 1 if any(abs(v[0] - x) <= w and abs(v[1] - y) <= h for x, y, w, h, _ in pads) else 0
+            if joins <= 1 and not zone_layers:
+                change = ('del', sp)
+                break
+        if change is None:
+            for idx, (sp, a, b, ly) in enumerate(segs):
+                if ly in zone_layers:
+                    continue
+                for e, f in ((a, b), (b, a)):
+                    others = [s for j, s in enumerate(segs) if j != idx]
+                    if (any(near(e, s[1]) or near(e, s[2]) or on_interior(e, s[1], s[2]) for s in others if s[3] == ly)
+                            or any(near(e, v) for _, v in vias) or on_pad(e, ly)):
+                        continue
+                    # e is a free end: keep the segment up to the touching point closest to e, if any
+                    touches = [p for s in others if s[3] == ly for p in (s[1], s[2]) if on_interior(p, a, b)]
+                    touches += [v for _, v in vias if on_interior(v, a, b)]
+                    if touches:
+                        cut = min(touches, key=lambda p: math.hypot(p[0] - e[0], p[1] - e[1]))
+                        change = ('trim', sp, e, cut)
+                    else:
+                        change = ('del', sp)
+                    break
+                if change:
+                    break
+        if change is None:
+            break
+        sp = change[1]
+        if change[0] == 'del':
+            text = text[:sp[0]] + text[sp[1]:]
+            removed += 1
+        else:
+            b = text[sp[0]:sp[1]]
+            e, cut = change[2], change[3]
+            for tag in ('start', 'end'):
+                m = re.search(r'\(%s ([-\d.]+) ([-\d.]+)\)' % tag, b)
+                if near((float(m.group(1)), float(m.group(2))), e):
+                    b = b[:m.start()] + '(%s %.6f %.6f)' % (tag, cut[0], cut[1]) + b[m.end():]
+                    break
+            text = text[:sp[0]] + b + text[sp[1]:]
+            trimmed += 1
+        text = re.sub(r'\n\t\n', '\n', text)
+    if removed or trimmed:
+        report.append('CLEAN %s: removed %d dangling item(s), trimmed %d stub(s)' % (net, removed, trimmed))
     return text
 
 
@@ -332,7 +440,7 @@ def main():
         i = new.index('\n\t(embedded_fonts') if '\n\t(embedded_fonts' in new else new.rindex('\n)')
         new = new[:i] + adds + new[i:]
     new = rename_and_rip(new, report)
-    print('\n'.join(r for r in report if r.startswith(('RENAME', 'RIP'))))
+    print('\n'.join(r for r in report if r.startswith(('RENAME', 'RIP', 'CLEAN'))))
     def count(s, kinds):
         return sum(1 for sp in children(s, (0, len(s))) if block_head(s, sp) in kinds)
     if count(new, ('footprint', 'zone')) < count(text, ('footprint', 'zone')):
