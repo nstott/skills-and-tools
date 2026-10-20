@@ -83,6 +83,13 @@ deviates silently (a finding).
   figures can be read. For MCUs, also use the vendor *hardware design guide* (RP2350: the `rp2350-design` skill, "Hardware
   design with RP2350"), which carries the reference schematic that the main datasheet does not. When a link is missing or
   not a PDF, find the datasheet by hand; don't skip the block.
+- **Confirm the part's identity first** (before comparing circuits): find the datasheet's *ordering information* and decode
+  the fitted MPN field by field (variant, fixed vs adjustable, output-voltage option, package, temperature grade). Say
+  which variant is fitted and which variant the circuit is drawn for; they must match. Then check the symbol name,
+  description and keywords, the Value, the LCSC catalogue entry and the footprint all name that same variant
+  (`sch-quality.py` `identity` flags contradictions it can see: variant suffixes such as `-33`, fixed vs adjustable,
+  pin count and package size, MPN vs LCSC part). Example caught this way: a symbol named `RT6150B-33` (fixed 3.3 V,
+  FB tied to VOUT) on an RT6150BGQW, the adjustable part, which would have regulated to 0.5 V.
 - **Build a table** per block: datasheet reference (document, page, figure), what it specifies, what the schematic has,
   verdict. Quote numbers, not impressions.
 - **What to compare, by block type**:
