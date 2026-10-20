@@ -315,6 +315,25 @@ def main():
             continue
         if not any(p in wire_pts for p in pts):
             flag('wiring', 'info', '%s has no wires: every pin is a label or power symbol (fine for headers; local parts read better wired)' % ref, ref)
+    # labels belong on the free end of a stub (or a pin end), not in the middle of a wire
+    def inside(k, a, b):
+        (x, y), (x1, y1), (x2, y2) = k, a, b
+        if (x, y) in (a, b):
+            return False
+        cross = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)
+        return abs(cross) < 1 and min(x1, x2) <= x <= max(x1, x2) and min(y1, y2) <= y <= max(y1, y2)
+    # A label that only names a wire between two pins may sit on it; a label that *connects* to another place (its name
+    # appears again) is a branch, and a branch drawn mid-wire is invisible: tee it off like any other connection.
+    all_pin_pts = set().union(*pin_pts.values()) if pin_pts else set()
+    uses = Counter(name for name, _ in labels)
+    for name, pt in labels:
+        k = key(*pt)
+        if k in wire_pts or k in all_pin_pts or uses[name] < 2:
+            continue
+        if any(inside(k, key(*a), key(*b)) for a, b in wires):
+            findings.append(dict(check='wiring', severity='warn', at=(round(pt[0], 2), round(pt[1], 2)),
+                                 msg='label %s connects to %d other place(s) but sits in the middle of a wire, so the branch is '
+                                     'invisible: tee it off (junction + short stub, label on the stub end)' % (name, uses[name] - 1)))
     four = [k for k, c in wire_pts.items() if c >= 4]
     for k in four:
         flag('wiring', 'warn', '4-way wire junction at (%.2f, %.2f): offset one branch so a missing dot cannot be misread' % (k[0] / 100, k[1] / 100))

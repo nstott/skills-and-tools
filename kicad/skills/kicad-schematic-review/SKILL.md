@@ -54,6 +54,10 @@ Flag every place the sheet departs from these:
   once a sheet is crowded.
 - **Wires for local, labels for long**: a part's own decoupling, pull-ups, crystal and feedback network are wired to it;
   labels only between blocks. A sheet that is mostly labels hides topology (`wiring`).
+- **Labels that connect sit on a stub end**: a label whose name appears elsewhere is a branch; draw it as one, with a
+  junction dot on the wire, a short stub out to the side and the label at the stub's free end (like a sense tap off a
+  divider). A label stuck in the middle of a wire hides the branch and collides with the parts' text (`wiring`). A label
+  that only names a wire between two pins may sit on that wire.
 - **Power symbols for rails**, decoupling drawn beside the pins it serves, one cap per pin group so the count is visible.
 - **No 4-way junctions**, dots only where wires join, no wire through a pin, everything on grid, no overlapping text:
   text must not touch other text, any symbol body or pin (its own body too, for passives) or a wire (`overlap`).
