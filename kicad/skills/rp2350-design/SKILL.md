@@ -16,7 +16,17 @@ buck-boost. Departing from the guide's regulator/crystal circuits is "at your ow
   DVDD net (1.1 V) with 4.7 uF; VREG_FB (50) to the 1.1 V node; VREG_PGND (47) to GND with its own return.
   DVDD pins 100 nF each (3). VREG_AVDD (46): 33 ohm from 3.3 V + 4.7 uF (RC filter).
 - Inductor: Abracon AOTA-B201610S3R3-101-T (0806, 3.3 uH, polarity dot). Orientation matters: the dot is the
-  current-in terminal = LX side. Layout of regulator, inductor and caps should mirror Pico 2 / the Minimal board.
+  **current-OUT** terminal, so the dot (pad 1) goes on **DVDD/+1V1** and the other pad on **VREG_LX** (RP2350 datasheet
+  Fig. 28: current enters at "+", the orientation indicator sits at "-"; the Minimal R4 PCB has L1 pad 1 = +1V1, dot
+  beside pad 1). A wrong-way-round inductor upsets the regulator at higher load currents and transients.
+- Copy the reference layout, don't approximate it: the RP2350A Minimal KiCad design (guide link
+  pip.raspberrypi.com/documents/RP-010328-CA, a zip with .kicad_sch and .kicad_pcb) has L1, C6 (VREG_VIN), C7 (VOUT),
+  C9 (VREG_AVDD) and R3 at fixed offsets from U1, small F.Cu pours for VREG_LX / +1V1 / +3V3 / GND (VREG_LX runs between
+  the pads of C6 and C7, which uses their wide-gap 0402 land pattern) and 3 GND + 2 +1V1 vias. Place those parts at the
+  same offsets, use their land patterns for L1/C6/C7, copy the pours, and keep other nets' tracks out of the VREG_LX
+  corridor (an F.Cu track keep-out) or the router will split the pour.
+- On 4+ layer boards cut the layer-2 copper under the VREG_LX node (datasheet Fig. 27): a keep-out on In1 under the
+  VREG_LX pour, about 0.3 mm larger. The datasheet also recommends a second 4.7 uF on DVDD at pin 23 (bottom edge).
 - ADC_AVDD (44): Pico 2 uses 200 ohm + 2.2 uF from 3.3 V (ADC_VREF header pin). AGND joins GND (0 ohm link is fine).
 - Guide shares one 100 nF between pins 53/54 only for lack of space; with 4 layers give each its own.
 
