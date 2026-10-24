@@ -113,7 +113,10 @@ def load(pcb):
         elif h == 'zone':
             n = re.search(r'\(net (?:\d+ )?"([^"]*)"\)', b)
             ly = re.search(r'\(layers? ([^)]*)\)', b).group(1)
-            zones.append(dict(net=n.group(1) if n else '', layers=re.findall(r'"([^"]+)"', ly)))
+            poly = re.search(r'\(polygon\s*\(pts(.*?)\)\s*\)', b, re.S)
+            pts = [(num(a_), num(c_)) for a_, c_ in re.findall(r'\(xy ([-\d.]+) ([-\d.]+)\)', poly.group(1))] if poly else []
+            area = abs(sum(pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1] for i in range(len(pts)))) / 2 if pts else 0
+            zones.append(dict(net=n.group(1) if n else '', layers=re.findall(r'"([^"]+)"', ly), area=area, keepout='(keepout' in b))
         elif h == 'gr_rect' and 'Edge.Cuts' in b:
             s = re.search(r'\(start ([-\d.]+) ([-\d.]+)\)', b)
             e = re.search(r'\(end ([-\d.]+) ([-\d.]+)\)', b)
@@ -440,10 +443,13 @@ def main():
         edge = [v for v in g if min(v['x'] - x0, x1 - v['x'], v['y'] - y0, y1 - v['y']) < 1.5]
         flag('stitching', 'info', '%d GND vias (%.2f/cm^2), %d within 1.5 mm of the board edge' % (len(g), dens, len(edge)))
     cu = [l for l, _ in B['layers']]
-    gplanes = {ly for z in B['zones'] if z['net'] in gnd_nets for ly in z['layers']}
+    # a plane is a zone covering a real share of the board; small local pours (regulator islands) are not planes
+    board_area = abs((B['outline'][2] - B['outline'][0]) * (B['outline'][3] - B['outline'][1])) if B['outline'] else 0
+    planes = [z for z in B['zones'] if not z['keepout'] and z['net'] and (not board_area or z['area'] >= 0.3 * board_area)]
+    gplanes = {ly for z in planes if z['net'] in gnd_nets for ly in z['layers']}
     # tracks of other nets on a plane layer cut the plane (return paths of signals above it detour)
     plane_layers = {}
-    for z in B['zones']:
+    for z in planes:
         for ly in z['layers']:
             plane_layers.setdefault(ly, set()).add(z['net'])
     cuts = defaultdict(float)
@@ -460,7 +466,7 @@ def main():
             continue
         adj = [order[j] for j in (i - 1, i + 1) if 0 <= j < len(order)]
         if not any(a_ in gplanes for a_ in adj) and ly not in gplanes:
-            pplanes = {z['net'] for z in B['zones'] for a_ in adj if a_ in z['layers']}
+            pplanes = {z['net'] for z in planes for a_ in adj if a_ in z['layers']}
             if pplanes:
                 flag('planes', 'info', 'signals on %s reference a power plane (%s) on %s, not GND: fine if it is well decoupled; keep fast signals on the GND-referenced layer' % (ly, ', '.join(sorted(pplanes)), ', '.join(adj)))
             else:
