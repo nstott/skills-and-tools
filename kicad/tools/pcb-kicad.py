@@ -172,6 +172,14 @@ def silk_count(r, ref=None):
     return len(vs)
 
 
+def sidecars(board_file):
+    """pcbnew.SaveBoard writes NAME.kicad_pro/.kicad_prl beside the board it saves; remove them for scratch copies."""
+    stem = board_file[:-len('.kicad_pcb')]
+    for ext in ('.kicad_pro', '.kicad_prl'):
+        if os.path.exists(stem + ext):
+            os.remove(stem + ext)
+
+
 def summary(r):
     mism = len([v for v in r['violations'] if v['type'] == 'lib_footprint_mismatch'])
     return '%d copper errors, %d unconnected, %d silk, %d library mismatches' % (r['score'][0], r['score'][1], silk_count(r), mism)
@@ -182,6 +190,7 @@ def refs_auto(path, b, refs, pro, base, log):
     try:
         pcbnew.SaveBoard(tmp, b)
         r = drc(tmp, pro)
+        sidecars(tmp)
         refs = refs or silk_refs(r)
         total = silk_count(r)
         fps = {fp.GetReference(): fp for fp in b.GetFootprints()}
@@ -213,6 +222,7 @@ def refs_auto(path, b, refs, pro, base, log):
                 t.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y)))
                 pcbnew.SaveBoard(tmp, b)
                 r2 = drc(tmp, pro)
+                sidecars(tmp)
                 if silk_count(r2, ref) == 0 and silk_count(r2) < total and r2['score'] <= base:
                     r, total = r2, silk_count(r2)
                     log.append('moved %s reference to (%.2f, %.2f)' % (ref, x, y))
@@ -223,6 +233,7 @@ def refs_auto(path, b, refs, pro, base, log):
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+        sidecars(tmp)
 
 
 def main():
@@ -264,6 +275,12 @@ def main():
         refs_auto(path, b, a[3:], pro, base, log)
     tmpf = os.path.join(d, '.%s.tmp.kicad_pcb' % base_name[:-len('.kicad_pcb')])
     pcbnew.SaveBoard(tmpf, b)
+    # SaveBoard also writes a .kicad_pro/.kicad_prl beside the copy (KiCad's default rules when no project was
+    # loaded); drop them so no stray project file is left next to the board
+    for ext in ('.kicad_pro', '.kicad_prl'):
+        side = tmpf[:-len('.kicad_pcb')] + ext
+        if os.path.exists(side):
+            os.remove(side)
     r1 = drc(tmpf, pro)
     log.append('DRC after: ' + summary(r1))
     print('\n'.join(log))
