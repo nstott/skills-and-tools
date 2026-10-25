@@ -48,8 +48,8 @@ Router behaviour to plan around:
   the geometry (pad edges, clearance, via radius), hand-place the stubs and the one via, then route the rest.
 - Tracks often end anywhere inside a via's copper rather than at its centre; tools that walk copper must allow for it.
 - `--same-net-pad-clearance 0.1` is meant to keep vias out of pads, but route.py still dropped +3V3 vias into
-  back-side pads (U3 pad 8, C20 pad 1 on rp2350-devboard). The wrapper fails on any pcb-quality `via-in-pad`; move
-  such a via just off the pad by hand.
+  back-side pads (U3 pad 8, C20 pad 1 on rp2350-devboard). `pcb-tidy.py FILE vias` moves each one just off its pad
+  (or drops it when it was redundant); the wrapper runs it and still fails on any `via-in-pad` left.
 - The congested escapes around a 0.4 mm-pitch QFN (ADC/VSYS_SENSE/GP26-28 on an RP2350) usually stay open after the
   retry; plan to hand-route them (step above).
 
@@ -59,7 +59,7 @@ Router behaviour to plan around:
 - `sch-pcb-diff.py`, then the `kicad-pcb-review` skill (`pcb-quality.py`, render and look).
 
 ## 4. Tidy
-`pcb-tidy.py prune | corners | widen NET=W... | meander NET --add MM` and `pcb-kicad.py fp-update | refs auto` (see
+`pcb-tidy.py prune | vias | corners | widen NET=W... | meander NET --add MM` and `pcb-kicad.py fp-update | refs auto` (see
 `kicad-pcb-review` section 4). Each keeps only changes after which DRC is no worse.
 
 ## 5. Install

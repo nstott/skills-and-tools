@@ -5,6 +5,7 @@
     pcb-tidy.py FILE.kicad_pcb corners
     pcb-tidy.py FILE.kicad_pcb widen NET=WIDTH [NET=WIDTH ...]
     pcb-tidy.py FILE.kicad_pcb meander NET --add MM [--partner NET] [--pitch 0.3]
+    pcb-tidy.py FILE.kicad_pcb vias
     options: --dry-run (report, write nothing)  --force (edit while KiCad has the board open)
 
   prune    delete what DRC calls dangling (track_dangling / via_dangling, matched by net, layer and length), repeated
@@ -16,6 +17,10 @@
   meander  add MM of length to NET (the shorter member of a pair) with square bumps on its longest straight segments,
            on the side away from the partner (D+ <-> D-, _P <-> _N inferred; --partner to name it).
            Measure the pair with pcb-quality.py first; it reports the signal-path skew.
+  vias     move every via that sits inside an SMD pad (pcb-quality `via-in-pad`: solder wicks down an open via) just
+           off the pad: nearest clear spot first, tracks that ended on the via follow it, and a short track on the
+           pad's layer joins pad and via. Kept only where DRC stays clean. With no clear spot, the via is deleted if
+           nothing becomes unconnected (it was redundant), otherwise reported for a hand fix.
 
 A change is kept only when DRC (copper errors: clearance, shorts, crossings, hole/edge clearance, mask bridges, plus
 unconnected items) is no worse than before. DRC runs on a temporary copy next to the board so the project rules apply.
@@ -316,6 +321,102 @@ def do_meander(t, drc, base, net, add, partner, pitch, log):
     return t
 
 
+def rot(lx, ly, deg):
+    th = math.radians(deg)
+    return lx * math.cos(th) + ly * math.sin(th), -lx * math.sin(th) + ly * math.cos(th)
+
+
+def smd_pads(t):
+    """SMD pads with absolute centre, board-axis width/height (same convention as pcb-quality), copper layer, net."""
+    out = []
+    for sp in children(t, (0, len(t))):
+        if block_head(t, sp) != 'footprint':
+            continue
+        b = t[sp[0]:sp[1]]
+        ref = re.search(r'\(property "Reference" "([^"]*)"', b).group(1)
+        at = re.search(r'\n\t\t\(at ([-\d.]+) ([-\d.]+)(?: ([-\d.]+))?\)', b)
+        x0, y0, r0 = float(at.group(1)), float(at.group(2)), float(at.group(3) or 0)
+        for p in children(b, (0, len(b))):
+            if block_head(b, p) != 'pad':
+                continue
+            pb = b[p[0]:p[1]]
+            pm = re.match(r'\(pad "([^"]*)" (\w+)', pb)
+            if pm.group(2) != 'smd':
+                continue
+            pa = re.search(r'\(at ([-\d.]+) ([-\d.]+)(?: ([-\d.]+))?\)', pb)
+            sz = re.search(r'\(size ([-\d.]+) ([-\d.]+)\)', pb)
+            net = re.search(r'\(net (?:\d+ )?"([^"]*)"\)', pb)
+            cu = [l for l in re.findall(r'"([^"]+)"', re.search(r'\(layers ([^)]*)\)', pb).group(1)) if l.endswith('.Cu')]
+            dx, dy = rot(float(pa.group(1)), float(pa.group(2)), r0)
+            w, h = float(sz.group(1)), float(sz.group(2))
+            if int(round((float(pa.group(3) or 0) - r0) / 90)) % 2:
+                w, h = h, w
+            out.append(dict(ref=ref, num=pm.group(1), at=(x0 + dx, y0 + dy), w=w, h=h,
+                            layer=cu[0] if cu else 'F.Cu', net=net.group(1) if net else ''))
+    return out
+
+
+def in_pad(pt, p, margin=0.0):
+    return abs(pt[0] - p['at'][0]) < p['w'] / 2 + margin and abs(pt[1] - p['at'][1]) < p['h'] / 2 + margin
+
+
+def do_vias(t, drc, base, log, clearance=0.1):
+    def offenders(t):
+        ps = smd_pads(t)
+        return [(v, p) for v in items(t) if v['kind'] == 'via' for p in ps if in_pad(v['at'], p)]
+    bad = offenders(t)
+    log.append('%d via(s) inside SMD pads' % len(bad))
+    tried = set()
+    while True:
+        bad = [(v, p) for v, p in offenders(t) if (round(v['at'][0], 3), round(v['at'][1], 3)) not in tried]
+        if not bad:
+            break
+        v, p = bad[0]
+        tried.add((round(v['at'][0], 3), round(v['at'][1], 3)))
+        if v['net'] != p['net']:
+            log.append('via %s at (%.2f, %.2f) sits in %s pad %s of another net (%s): fix by hand'
+                       % (v['net'], *v['at'], p['ref'], p['num'], p['net']))
+            continue
+        r = v['size'] / 2
+        cands = []
+        for k in (0.0, 0.15, 0.35, 0.6, 0.9):
+            ox, oy = p['w'] / 2 + r + clearance + k, p['h'] / 2 + r + clearance + k
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                cands.append((p['at'][0] + dx * ox, p['at'][1] + dy * oy))
+        cands.sort(key=lambda c: math.dist(c, v['at']))
+        old = v['at']
+        attached = [i for i in items(t) if i['kind'] == 'segment' and i['net'] == v['net']
+                    and (math.dist(i['a'], old) <= r or math.dist(i['b'], old) <= r)]
+        w = min(0.25, p['w'], p['h'])
+        done = False
+        for c in cands:
+            new_via = re.sub(r'\(at [-\d.]+ [-\d.]+\)', '(at %.4f %.4f)' % c, v['text'], count=1)
+            segs = ''
+            for i in attached:
+                a = c if math.dist(i['a'], old) <= r else i['a']
+                b = c if math.dist(i['b'], old) <= r else i['b']
+                if math.dist(a, b) > 1e-4:
+                    segs += seg_text(a, b, i['width'], i['net'], i['layer'])
+            segs += seg_text(p['at'], c, w, v['net'], p['layer'])
+            t2 = edit(t, [v['span']] + [i['span'] for i in attached], '\t' + new_via + '\n' + segs)
+            if no_worse(drc, drc.run(t2), base):
+                t = t2
+                log.append('moved %s via from %s pad %s (%.2f, %.2f) to (%.2f, %.2f)' % (v['net'], p['ref'], p['num'], *old, *c))
+                done = True
+                break
+        if not done:
+            # a redundant via (another via or the track itself already carries the net) can simply go
+            t2 = edit(t, [v['span']])
+            if no_worse(drc, drc.run(t2), base):
+                t = do_prune(t2, drc, base, [])
+                log.append('removed redundant %s via in %s pad %s at (%.2f, %.2f): nothing became unconnected'
+                           % (v['net'], p['ref'], p['num'], *old))
+            else:
+                log.append('%s via in %s pad %s at (%.2f, %.2f): no clear spot nearby; move it by hand'
+                           % (v['net'], p['ref'], p['num'], *old))
+    return t
+
+
 def main():
     a = sys.argv[1:]
     dry, force = '--dry-run' in a, '--force' in a
@@ -326,7 +427,7 @@ def main():
             i = a.index(k)
             opt[k] = a[i + 1]
             del a[i:i + 2]
-    if len(a) < 2 or a[1] not in ('prune', 'corners', 'widen', 'meander'):
+    if len(a) < 2 or a[1] not in ('prune', 'corners', 'widen', 'meander', 'vias'):
         sys.exit(__doc__)
     pcb, cmd, rest = a[0], a[1], a[2:]
     d, base_name = os.path.split(os.path.abspath(pcb))
@@ -343,6 +444,8 @@ def main():
             new = do_prune(text, drc, base, log)
         elif cmd == 'corners':
             new = do_corners(text, drc, base, log)
+        elif cmd == 'vias':
+            new = do_vias(text, drc, base, log)
         elif cmd == 'widen':
             want = {}
             for r in rest:

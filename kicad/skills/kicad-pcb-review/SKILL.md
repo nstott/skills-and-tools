@@ -72,6 +72,7 @@ When asked to fix them, use the DRC-checked tools instead of hand-editing copper
 DRC with zones refilled is no worse; backup in `.backups/`; close the board in KiCad first):
 - dangling stubs, duplicate segments: `${CLAUDE_PLUGIN_ROOT}/tools/pcb-tidy.py FILE.kicad_pcb prune`
 - acute corners: `pcb-tidy.py FILE.kicad_pcb corners`
+- via-in-pad: `pcb-tidy.py FILE.kicad_pcb vias` (moves the via just off the pad, or drops a redundant one)
 - power widths / sub-floor tracks: `pcb-tidy.py FILE.kicad_pcb widen /LX1=0.4 /VSYS=0.4 +3V3=0.127`
 - pair skew (after `pcb-quality.py` reports the signal-path mismatch): `pcb-tidy.py FILE.kicad_pcb meander /USB_D- --add 2.1`
 - `lib_footprint_mismatch`: `${CLAUDE_PLUGIN_ROOT}/tools/pcb-kicad.py FILE.kicad_pcb fp-update` (all flagged parts)

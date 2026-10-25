@@ -4,7 +4,7 @@
 #   pcb-route.sh IN.kicad_pcb OUTDIR [--planes "GND=In1.Cu +3V3=In2.Cu"] [--pair "/USB_D+ /USB_D-"]...
 #                [--power "+3V3=0.25 /VSYS=0.4 ..."] [--nets "PATTERN ..."] [--skip "NET ..."] [--ripup N]
 # Stages in OUTDIR: 0-in, 1-planes, 2-pairN, 3-route, 4-retry (open nets again, more rip-up), 5-final (pcb-tidy prune,
-# widen the --power nets, straighten corners). Prints DRC (zones refilled) and pcb-quality summaries; exit 1 while any
+# vias out of pads, widen the --power nets, straighten corners). Prints DRC (zones refilled) and pcb-quality summaries; exit 1 while any
 # net is open or a copper DRC error is left. --skip: nets a copper pour already joins (a reference regulator's LX pour
 # inside a no-tracks keep-out), which the router would otherwise stub into the keep-out.
 # Never touches IN: review OUTDIR/5-final.kicad_pcb, then install it yourself (backup first, KiCad closed).
@@ -138,18 +138,21 @@ stage 5-final
 cp "$cur" "$out/5-final.kicad_pcb"
 tidy="$TOOLS_DIR/pcb-tidy.py"
 "$tidy" "$out/5-final.kicad_pcb" prune > "$out/5-final.tidy.log" 2>&1
+"$tidy" "$out/5-final.kicad_pcb" vias >> "$out/5-final.tidy.log" 2>&1
 [ -n "$power" ] && "$tidy" "$out/5-final.kicad_pcb" widen $power >> "$out/5-final.tidy.log" 2>&1
 "$tidy" "$out/5-final.kicad_pcb" corners >> "$out/5-final.tidy.log" 2>&1
 grep -cE '^prune ' "$out/5-final.tidy.log" | sed 's/^/tidy: pruned /'
 grep -E '^(widened|below target)' "$out/5-final.tidy.log" | head -8 | sed 's/^/tidy: /'
 grep -cE '^straightened' "$out/5-final.tidy.log" | sed 's/^/tidy: straightened corners /'
+grep -E '^(moved|removed redundant).*via|no clear spot' "$out/5-final.tidy.log" | sed 's/^/tidy: /'
 grep -hE 'Single-ended:|Multi-point:|Diff pairs:' "$out"/*.log | cut -c1-120
 check "$out/5-final.kicad_pcb"
 sch="${in%.kicad_pcb}.kicad_sch"
 [ -f "$sch" ] && cp "$sch" "$out/5-final.kicad_sch"
 python3 "$TOOLS_DIR/pcb-quality.py" "$out/5-final.kicad_pcb" > "$out/5-final.quality.txt"
 grep -E '^(BAD|WARN)' "$out/5-final.quality.txt" | head -40
-# the router can drop vias into same-net pads despite --same-net-pad-clearance (seen on back-side parts)
+# the router can drop vias into same-net pads despite --same-net-pad-clearance (seen on back-side parts);
+# pcb-tidy vias moves or drops them, and anything it could not fix is left here
 vip=$(grep -c 'via-in-pad' "$out/5-final.quality.txt")
 echo "result: $out/5-final.kicad_pcb"
 if [ -n "$OPEN_NETS" ] || [ "$COPPER_ERRORS" != "0" ] || [ "$vip" != "0" ]; then
