@@ -74,5 +74,9 @@ DRC with zones refilled is no worse; backup in `.backups/`; close the board in K
 - acute corners: `pcb-tidy.py FILE.kicad_pcb corners`
 - power widths / sub-floor tracks: `pcb-tidy.py FILE.kicad_pcb widen /LX1=0.4 /VSYS=0.4 +3V3=0.127`
 - pair skew (after `pcb-quality.py` reports the signal-path mismatch): `pcb-tidy.py FILE.kicad_pcb meander /USB_D- --add 2.1`
+- `lib_footprint_mismatch`: `${CLAUDE_PLUGIN_ROOT}/tools/pcb-kicad.py FILE.kicad_pcb fp-update` (all flagged parts)
+- refdes over pads / other text / the edge: `pcb-kicad.py FILE.kicad_pcb refs hide H1 H2 H3 H4` (mounting holes), then
+  `pcb-kicad.py FILE.kicad_pcb refs auto`. Silk that is part of a footprint's own outline (a connector overhanging the
+  edge) is a footprint edit, not a text move.
 Each DRC run takes seconds; a full pass is a few minutes. Re-run `pcb-quality.py` afterwards and report what was left
 and why (a segment that cannot widen without a clearance error is reported with its coordinates).
