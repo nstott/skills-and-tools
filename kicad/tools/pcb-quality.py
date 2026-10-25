@@ -12,7 +12,9 @@ Each finding names the part / net and board coordinates (mm). Checks (thresholds
   critical-vias  vias on clock / crystal / diff-pair nets
   power-width    narrowest track on each power net against a width floor (0.25 mm, or --power-width)
   fab-margin     vias, drills and tracks below the fab tier's standard floor (cost or yield risk)
-  via-in-pad     vias inside an SMD pad
+  via-in-pad     vias inside an SMD pad (same-net vias in an exposed/thermal pad are the intended thermal vias)
+  exposed-pad    an IC's exposed pad (SMD pad of 1.5 mm^2 or more) with no via into it: on parts like the RP2350
+                 QFN it is the only GND connection, so it needs a via array to the plane
   geometry       acute (<90 deg) corners and dangling track ends
   stitching      GND via density over the board area and near the edge
   planes         each signal layer has a GND plane on an adjacent layer
@@ -474,14 +476,37 @@ def main():
             (thin[0]['x1'], thin[0]['y1']))
 
     # --- via in pad
+    def box(f, p):
+        return (p['w'], p['h']) if int(round((p['ang'] - f['rot']) / 90)) % 2 == 0 else (p['h'], p['w'])
+    def exposed(p):
+        return p['kind'] == 'smd' and p['w'] * p['h'] >= 1.5
     for v in B['vias']:
         for f in fps:
             for p in f['pads']:
                 if p['kind'] != 'smd':
                     continue
-                w, h = (p['w'], p['h']) if int(round((p['ang'] - f['rot']) / 90)) % 2 == 0 else (p['h'], p['w'])
+                w, h = box(f, p)
+                if exposed(p) and v['net'] == p['net']:
+                    continue  # thermal via in an exposed pad
                 if abs(v['x'] - p['x']) < w / 2 and abs(v['y'] - p['y']) < h / 2:
                     flag('via-in-pad', 'warn', 'via (%s) inside %s pad %s: needs filled+capped vias (IPC-4761 VII) or solder wicks' % (v['net'], f['ref'], p['num']), (v['x'], v['y']))
+
+    # --- exposed pads need vias (board vias or the footprint's own thermal-via pads)
+    for f in fps:
+        if not re.match(r'^(U|IC)\d', f['ref']):
+            continue
+        for p in f['pads']:
+            if not exposed(p) or not p['net']:
+                continue
+            w, h = box(f, p)
+            inside = lambda x, y: abs(x - p['x']) < w / 2 and abs(y - p['y']) < h / 2
+            n = sum(1 for v in B['vias'] if v['net'] == p['net'] and inside(v['x'], v['y']))
+            n += sum(1 for q in f['pads'] if q['kind'] == 'thru_hole' and q['net'] == p['net'] and inside(q['x'], q['y']))
+            if n == 0:
+                flag('exposed-pad', 'bad', '%s exposed pad %s (%s, %.1fx%.1f mm) has no vias to the plane: heat and (on QFNs '
+                     'like the RP2350) the whole GND return go through surface tracks' % (f['ref'], p['num'], p['net'], w, h), (p['x'], p['y']))
+            elif n < 4 and w * h >= 6:
+                flag('exposed-pad', 'warn', '%s exposed pad %s: only %d via(s)' % (f['ref'], p['num'], n), (p['x'], p['y']))
 
     # --- geometry: acute corners and dangling ends
     ends = defaultdict(list)

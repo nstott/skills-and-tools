@@ -363,7 +363,9 @@ def in_pad(pt, p, margin=0.0):
 def do_vias(t, drc, base, log, clearance=0.1):
     def offenders(t):
         ps = smd_pads(t)
-        return [(v, p) for v in items(t) if v['kind'] == 'via' for p in ps if in_pad(v['at'], p)]
+        # same-net vias in an exposed (thermal) pad are intended, leave them
+        return [(v, p) for v in items(t) if v['kind'] == 'via' for p in ps if in_pad(v['at'], p)
+                and not (p['w'] * p['h'] >= 1.5 and v['net'] == p['net'])]
     bad = offenders(t)
     log.append('%d via(s) inside SMD pads' % len(bad))
     tried = set()

@@ -31,6 +31,9 @@ Electrical:
   stitching caps.
 - **Switching loops tiny**: regulator input cap, switch pins, inductor and output cap within a few mm, short and wide
   (`switching`). Check by eye that the input cap's GND and the IC's GND meet directly, not through a long plane path.
+- **Exposed pads tied down**: an IC's exposed pad needs a via array into the GND plane (`exposed-pad`). On the
+  RP2350 QFN-60 it is the chip's only GND; a footprint without vias leaves the whole return on surface tracks. Use
+  KiCad's `..._ThermalVias` footprint variant, or same-net vias in the pad (not counted as via-in-pad).
 - **Decoupling at the pins**: 100 nF within about 2 mm of each supply pin with its own GND via next to the cap pad
   (`decoupling`). A cap on the far side of the board, or tied in through a long thin track, does little.
 - **Few vias on critical nets**: USB, crystal and clock nets stay on one layer; a layer change needs a GND via beside it
@@ -72,7 +75,8 @@ When asked to fix them, use the DRC-checked tools instead of hand-editing copper
 DRC with zones refilled is no worse; backup in `.backups/`; close the board in KiCad first):
 - dangling stubs, duplicate segments: `${CLAUDE_PLUGIN_ROOT}/tools/pcb-tidy.py FILE.kicad_pcb prune`
 - acute corners: `pcb-tidy.py FILE.kicad_pcb corners`
-- via-in-pad: `pcb-tidy.py FILE.kicad_pcb vias` (moves the via just off the pad, or drops a redundant one)
+- via-in-pad: `pcb-tidy.py FILE.kicad_pcb vias` (moves the via just off the pad, or drops a redundant one; same-net
+  thermal vias in an exposed pad are left alone)
 - power widths / sub-floor tracks: `pcb-tidy.py FILE.kicad_pcb widen /LX1=0.4 /VSYS=0.4 +3V3=0.127`
 - pair skew (after `pcb-quality.py` reports the signal-path mismatch): `pcb-tidy.py FILE.kicad_pcb meander /USB_D- --add 2.1`
 - `lib_footprint_mismatch`: `${CLAUDE_PLUGIN_ROOT}/tools/pcb-kicad.py FILE.kicad_pcb fp-update` (all flagged parts)
