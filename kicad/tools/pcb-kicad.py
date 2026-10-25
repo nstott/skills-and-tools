@@ -127,11 +127,17 @@ def fp_update(b, refs, project_dir, log):
             old.setdefault(p.GetNumber(), []).append(p.GetPosition())
 
         def err():
+            # every old pad must have a new pad of the same number on top of it; extra new pads (thermal vias
+            # added by a _ThermalVias variant share the exposed pad's number) are not counted
             e = 0
+            news = {}
             for p in new.Pads():
-                if p.GetNumber() in old:
-                    q = p.GetPosition()
-                    e += min(abs(q.x - o.x) + abs(q.y - o.y) for o in old[p.GetNumber()])
+                news.setdefault(p.GetNumber(), []).append(p.GetPosition())
+            for num, olds in old.items():
+                if num not in news:
+                    continue
+                for o in olds:
+                    e += min(abs(q.x - o.x) + abs(q.y - o.y) for q in news[num])
             return e
         best = None
         for deg in (0, 90, 180, 270):
