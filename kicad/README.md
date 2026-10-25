@@ -9,6 +9,7 @@ Circuit design skills and tools for KiCad 10 projects (installed as `kicad@nstot
 - `kicad-parts-lcsc` - pick JLCPCB parts, LCSC/MPN fields, BOM check.
 - `kicad-footprint-from-datasheet` - make and verify a footprint from a datasheet land pattern.
 - `rp2350-design` - RP2350 supply/clock/flash/USB/Pico 2 pinout notes.
+- `kicad-pcb-routing` - route at the fab's standard tier with clean planes (KiCad Routing Tools), then check, tidy and install.
 - `kicad-pcb-review` - measure a PCB against layout-quality signals (decoupling, loops, plane cuts, pairs, fab margin) and report deviations.
 
 ## Tools
