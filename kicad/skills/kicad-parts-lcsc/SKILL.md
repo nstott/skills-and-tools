@@ -20,6 +20,13 @@ Rules of thumb:
 - 0402 passives need a decent soldering iron by hand; for hand-assembled boards use 0603.
 - Pin headers and other through-hole parts: decide hand-solder vs JLC THT service explicitly.
 - If the exact connector isn't in the catalogue, a clone may exist (verify the footprint) - record that in the notes.
+  "Compatible" means the plug mates, not that the land pattern matches. Example: the 1 mm SH debug header
+  C7430445 is a ZX-SH1.0-3PWT, but the board had KiCad's `JST_SH_SM03B-SRSS-TB` footprint. The ZX drawing puts the
+  mounting pads at 1.2x2.5 mm, x +-2.1, 3.4 mm from the signal row (JST: 1.2x1.8, x +-2.3, 3.875 mm), so its tabs
+  would partly miss the pads. Whenever the MPN in the LCSC field differs from the part a footprint is named after,
+  open that LCSC part's own drawing (`datasheet-get.py SCH REF --render`) and compare the pads. If they differ, make
+  a project footprint from it (`kicad-footprint-from-datasheet`). For a landscape drawing that `sips` renders
+  cropped or masked, `qlmanage -t -s 3200 -o OUTDIR ds.pdf` renders the whole sheet.
 
 ## Write the fields
 Put `LCSC` and `MPN` as hidden symbol fields (the relayout engine's `r.set_part(ref, lcsc, mpn)` does it in a
