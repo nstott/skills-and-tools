@@ -4,7 +4,9 @@
     pcb-quality.py FILE.kicad_pcb [--sch FILE.kicad_sch] [--fab jlc-standard|jlc-advanced] [--json OUT]
 
 Each finding names the part / net and board coordinates (mm). Checks (thresholds in CFG below):
-  decoupling     every IC power pin has a cap (one pad on that net, the other on GND) within 2 mm; >5 mm is bad
+  decoupling     every IC power pin has a cap (one pad on that net, the other on GND) within 2 mm; >5 mm is bad; a cap
+                 on the other side needs a same-net via within 1 mm of the pin's pad and a GND via (or GND pour) at its
+                 GND pad (edge-to-edge distances)
   switching      regulator loop: inductor and the bulk caps (>=1 uF) on the regulator's power pins sit close to it
   crystal        crystal load caps close to the crystal; no foreign-net copper inside the crystal's footprint area
   diff-pairs     P/N nets (D+/D-, _P/_N, DP/DM): signal-path length mismatch (connector pad to IC pad through series
@@ -41,7 +43,7 @@ from kicad_sch.sx import block_head, children  # noqa: E402
 KICAD_CLI = os.environ.get('KICAD_CLI', '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli')
 
 CFG = dict(
-    decap_warn=2.0, decap_bad=5.0,          # mm, power pad to nearest decoupling cap pad
+    decap_warn=2.0, decap_bad=5.0, decap_via=1.0,          # mm, power pad to nearest decoupling cap pad
     loop_warn=3.0, loop_bad=6.0,            # mm, regulator pad to its inductor / bulk caps
     xtal_cap_warn=2.5,                      # mm, crystal pad to its load cap
     dp_mismatch_warn=1.0, dp_mismatch_bad=3.0,  # mm, diff pair length difference
@@ -50,6 +52,8 @@ CFG = dict(
     power_width=0.25,                       # mm, minimum track width on power nets
     stitch_per_cm2=1.0,                     # GND vias per cm^2 below this is flagged
 )
+SUPPLY_PIN = re.compile(r'^(IO|D|A|V|ADC_A|USB_OTP_|QSPI_IO|VREG_)?V(DD|CC|IN)', re.I)
+
 FABS = {
     'jlc-standard': dict(via_diameter=0.45, via_drill=0.2, track=0.127, name='JLCPCB standard'),
     'jlc-advanced': dict(via_diameter=0.25, via_drill=0.15, track=0.09, name='JLCPCB advanced'),
@@ -117,10 +121,11 @@ def load(pcb):
         elif h == 'zone':
             n = re.search(r'\(net (?:\d+ )?"([^"]*)"\)', b)
             ly = re.search(r'\(layers? ([^)]*)\)', b).group(1)
-            poly = re.search(r'\(polygon\s*\(pts(.*?)\)\s*\)', b, re.S)
+            poly = re.search(r'\(polygon\s*\(pts((?:\s*\(xy [-\d.]+ [-\d.]+\))+)', b)
             pts = [(num(a_), num(c_)) for a_, c_ in re.findall(r'\(xy ([-\d.]+) ([-\d.]+)\)', poly.group(1))] if poly else []
             area = abs(sum(pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1] for i in range(len(pts)))) / 2 if pts else 0
-            zones.append(dict(net=n.group(1) if n else '', layers=re.findall(r'"([^"]+)"', ly), area=area, keepout='(keepout' in b))
+            zones.append(dict(net=n.group(1) if n else '', layers=re.findall(r'"([^"]+)"', ly), area=area, keepout='(keepout' in b,
+                              pts=pts))
         elif h == 'gr_rect' and 'Edge.Cuts' in b:
             s = re.search(r'\(start ([-\d.]+) ([-\d.]+)\)', b)
             e = re.search(r'\(end ([-\d.]+) ([-\d.]+)\)', b)
@@ -147,6 +152,16 @@ def pin_types(sch):
         for nd in n:
             types[(nd.get('ref'), nd.get('pin'))] = (nd.get('pintype') or '', nd.get('pinfunction') or '')
     return types
+
+
+def in_poly(pt, poly):
+    x, y = pt
+    inside = False
+    for i in range(len(poly)):
+        x1, y1 = poly[i]; x2, y2 = poly[i - 1]
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            inside = not inside
+    return inside
 
 
 def dist(a, b):
@@ -195,7 +210,10 @@ def main():
         if not p['net'] or p['net'] in gnd_nets:
             return False
         if types is not None:
-            return types.get((f['ref'], p['num']), ('',))[0] == 'power_in'
+            ptype, pfun = types.get((f['ref'], p['num']), ('', ''))
+            # KiCad library symbols type only one of several same-name supply pins power_in and the rest passive
+            # (stacked-pin convention), so a passive pin whose function names a supply counts too
+            return ptype == 'power_in' or (ptype == 'passive' and bool(SUPPLY_PIN.search(pfun or '')))
         return bool(POWER_NAME.search(p['net']))
 
     caps = [f for f in fps if re.match(r'^C\d', f['ref'])]
@@ -224,6 +242,26 @@ def main():
                 flag('decoupling', 'bad', '%s pin %s (%s): nearest cap %s is %.1f mm away' % (f['ref'], p['num'], p['net'], cref, d), (p['x'], p['y']))
             elif d > CFG['decap_warn']:
                 flag('decoupling', 'warn', '%s pin %s (%s): nearest cap %s is %.1f mm away' % (f['ref'], p['num'], p['net'], cref, d), (p['x'], p['y']))
+            # a cap on the other side only decouples through vias: the pin needs one close by, and the cap's GND pad
+            # needs a GND via or a GND pour under it; otherwise the loop runs the long way round
+            c = by_ref[cref]
+            if c['layer'] != f['layer']:
+                pw_, ph_ = (p['w'], p['h']) if int(round((p['ang'] - f['rot']) / 90)) % 2 == 0 else (p['h'], p['w'])
+                pv = min((max(0.0, math.hypot(max(0, abs(v['x'] - p['x']) - pw_ / 2), max(0, abs(v['y'] - p['y']) - ph_ / 2)) - v['size'] / 2)
+                          for v in B['vias'] if v['net'] == p['net']), default=99)
+                if pv > CFG['decap_via']:
+                    flag('decoupling', 'warn', '%s pin %s (%s): its cap %s is on the other side but the nearest %s via is %.1f mm '
+                         'from the pad' % (f['ref'], p['num'], p['net'], cref, p['net'], pv), (p['x'], p['y']))
+                gp = [q for q in c['pads'] if q['net'] in gnd_nets]
+                if gp:
+                    gv = min((max(0.0, dist(gp[0], v) - v['size'] / 2 - min(gp[0]['w'], gp[0]['h']) / 2)
+                              for v in B['vias'] if v['net'] == gp[0]['net']), default=99)
+                    clay = c['layer']
+                    on_pour = any(z['net'] == gp[0]['net'] and clay in z['layers'] and z['pts'] and in_poly((gp[0]['x'], gp[0]['y']), z['pts'])
+                                  for z in B['zones'] if not z['keepout'])
+                    if gv > CFG['decap_via'] and not on_pour:
+                        flag('decoupling', 'warn', '%s pin %s: cap %s GND pad has no GND via within %.1f mm (nearest %.1f) and no '
+                             'GND pour' % (f['ref'], p['num'], cref, CFG['decap_via'], gv), (gp[0]['x'], gp[0]['y']))
 
     # --- switching regulator loops: an IC that shares nets with both pads of an inductor
     for L in [f for f in fps if re.match(r'^L\d', f['ref'])]:
