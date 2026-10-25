@@ -7,7 +7,8 @@ Each finding names the part / net and board coordinates (mm). Checks (thresholds
   decoupling     every IC power pin has a cap (one pad on that net, the other on GND) within 2 mm; >5 mm is bad
   switching      regulator loop: inductor and the bulk caps (>=1 uF) on the regulator's power pins sit close to it
   crystal        crystal load caps close to the crystal; no foreign-net copper inside the crystal's footprint area
-  diff-pairs     P/N nets (D+/D-, _P/_N, DP/DM): length mismatch, vias, layer changes
+  diff-pairs     P/N nets (D+/D-, _P/_N, DP/DM): signal-path length mismatch (connector pad to IC pad through series
+                 parts; ESD taps and connector A/B bridges are not skew), vias, layer changes
   critical-vias  vias on clock / crystal / diff-pair nets
   power-width    narrowest track on each power net against a width floor (0.25 mm, or --power-width)
   fab-margin     vias, drills and tracks below the fab tier's standard floor (cost or yield risk)
@@ -21,6 +22,7 @@ Pin types come from the schematic netlist (`kicad-cli`, run in the schematic's f
 sibling .kicad_sch exists; otherwise power nets are recognised by name. KiCad DRC is NOT run here: run
 `kicad-cli pcb drc --refill-zones` alongside (see the kicad-pcb-review skill).
 """
+import heapq
 import json
 import math
 import os
@@ -321,26 +323,108 @@ def main():
                 seen.add(x)
                 todo += list(link.get(x, ()))
         return frozenset(seen)
+    def signal_path(chain_nets):
+        """Copper length of the signal path from the connector pad to the IC pad (shortest route through the
+        net's tracks, vias and 2-pad series parts), so ESD taps and connector A/B bridges don't count as skew.
+        None when either end or a connected path is missing."""
+        on = [(f, p) for f in fps for p in f['pads'] if p['net'] in chain_nets]
+        conn = [(f, p) for f, p in on if re.match(r'^(J|P|CN|USB)\d', f['ref'])]
+        ics = [f for f in fps if len(f['pads']) > 2 and not re.match(r'^(J|P|CN|USB)\d', f['ref'])
+               and any(p['net'] in chain_nets for p in f['pads'])]
+        if not conn or not ics:
+            return None
+        ic = max(ics, key=lambda f: len(f['pads']))
+        far = [(f, p) for f, p in on if f is ic]
+        key = lambda x, y, l: (round(x, 3), round(y, 3), l)
+        adj = defaultdict(list)
+        def edge(a, b, w):
+            adj[a].append((b, w)); adj[b].append((a, w))
+        cu = [l for l, _ in B['layers']] or ['F.Cu', 'B.Cu']
+        ends = defaultdict(list)
+        for s in B['segs']:
+            if s['net'] in chain_nets:
+                a, b = key(s['x1'], s['y1'], s['layer']), key(s['x2'], s['y2'], s['layer'])
+                edge(a, b, math.hypot(s['x2'] - s['x1'], s['y2'] - s['y1']))
+                ends[s['net']] += [a, b]
+        for v in B['vias']:
+            if v['net'] in chain_nets:
+                pts = [key(v['x'], v['y'], l) for l in cu]
+                for q in pts[1:]:
+                    edge(pts[0], q, 0)
+                seg_ends = set(ends[v['net']])
+                for e in seg_ends:  # a track may end anywhere inside the via's copper
+                    if math.hypot(e[0] - v['x'], e[1] - v['y']) <= v['size'] / 2:
+                        edge(e, key(v['x'], v['y'], e[2]), 0)
+                ends[v['net']] += pts
+        for s in B['segs']:  # T-junctions and near-misses: an end landing on another track of the net
+            if s['net'] not in chain_nets:
+                continue
+            L = math.hypot(s['x2'] - s['x1'], s['y2'] - s['y1'])
+            if L < 1e-6:
+                continue
+            for e in set(ends[s['net']]):
+                if e[2] != s['layer']:
+                    continue
+                t_ = ((e[0] - s['x1']) * (s['x2'] - s['x1']) + (e[1] - s['y1']) * (s['y2'] - s['y1'])) / L ** 2
+                t_ = min(1.0, max(0.0, t_))
+                if math.hypot(s['x1'] + t_ * (s['x2'] - s['x1']) - e[0], s['y1'] + t_ * (s['y2'] - s['y1']) - e[1]) < s['w'] / 2:
+                    edge(e, key(s['x1'], s['y1'], s['layer']), t_ * L)
+                    edge(e, key(s['x2'], s['y2'], s['layer']), (1 - t_) * L)
+        for f, p in on:
+            pl = cu if '*.Cu' in p['layers'] else p['layers']
+            r = max(p['w'], p['h']) / 2
+            for e in ends[p['net']]:
+                if e[2] in pl and abs(e[0] - p['x']) <= r and abs(e[1] - p['y']) <= r:
+                    edge(('pad', f['ref'], p['num']), e, 0)
+        for f in fps:
+            if len(f['pads']) == 2 and {p['net'] for p in f['pads']} <= chain_nets and f is not ic:
+                edge(('pad', f['ref'], f['pads'][0]['num']), ('pad', f['ref'], f['pads'][1]['num']), 0)
+
+        best = None
+        for f, p in conn:
+            d0 = {('pad', f['ref'], p['num']): 0.0}
+            q = [(0.0, 0, ('pad', f['ref'], p['num']))]
+            while q:
+                d, _, u = heapq.heappop(q)
+                if d > d0.get(u, 1e9):
+                    continue
+                for w_, c in adj[u]:
+                    if d + c < d0.get(w_, 1e9):
+                        d0[w_] = d + c
+                        heapq.heappush(q, (d + c, id(w_), w_))
+            for g, pp in far:
+                d = d0.get(('pad', g['ref'], pp['num']))
+                if d is not None and (best is None or d < best):
+                    best = d
+        return best
+
     merged = {}
     for p_, n_ in pairs:
         cp, cn = chain(p_), chain(n_)
         merged[(cp, cn)] = (p_, n_)
     for (cp, cn), (p_, n_) in sorted(merged.items(), key=lambda kv: kv[1]):
         if len(cp) > 1:
-            lp, ln = sum(length[x] for x in cp), sum(length[x] for x in cn)
+            lp, ln = signal_path(cp), signal_path(cn)
+            what = 'signal path'
+            if lp is None or ln is None:
+                lp, ln, what = sum(length[x] for x in cp), sum(length[x] for x in cn), 'total copper'
             dl = abs(lp - ln)
             if dl > CFG['dp_mismatch_warn']:
                 flag('diff-pairs', 'bad' if dl > CFG['dp_mismatch_bad'] else 'warn',
-                     'pair %s / %s (through series parts): length %.1f vs %.1f mm (mismatch %.1f mm)' % (
-                         '+'.join(sorted(cp)), '+'.join(sorted(cn)), lp, ln, dl))
+                     'pair %s / %s (through series parts): %s %.1f vs %.1f mm (mismatch %.1f mm)' % (
+                         '+'.join(sorted(cp)), '+'.join(sorted(cn)), what, lp, ln, dl))
     for p_, n_ in sorted(pairs):
         if any(p_ in c[0] and len(c[0]) > 1 for c in merged):
             dl = 0  # length judged on the whole chain above
         else:
-            dl = abs(length[p_] - length[n_])
+            lp, ln = signal_path({p_}), signal_path({n_})
+            what = 'signal path'
+            if lp is None or ln is None:
+                lp, ln, what = length[p_], length[n_], 'total copper'
+            dl = abs(lp - ln)
         if dl > CFG['dp_mismatch_warn']:
             flag('diff-pairs', 'bad' if dl > CFG['dp_mismatch_bad'] else 'warn',
-                 'pair %s / %s: length %.1f vs %.1f mm (mismatch %.1f mm)' % (p_, n_, length[p_], length[n_], dl))
+                 'pair %s / %s: %s %.1f vs %.1f mm (mismatch %.1f mm)' % (p_, n_, what, lp, ln, dl))
         for n in (p_, n_):
             if nvias[n] > CFG['dp_vias_warn']:
                 flag('diff-pairs', 'warn', '%s: %d vias (keep a pair on one layer, add GND vias beside any layer change)' % (n, nvias[n]))
