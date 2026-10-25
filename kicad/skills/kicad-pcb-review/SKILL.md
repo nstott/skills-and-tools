@@ -66,3 +66,13 @@ switching loops, mismatched pairs, sub-standard vias, acute corners, silkscreen 
 confirm). For each give part/net, layer and coordinates, the signal it breaks, and the fix (for example "move C23 next to
 X1 pin 1", "re-route /GP7 off In1.Cu", or "re-run the router with `--layers F.Cu In1.Cu In2.Cu B.Cu --layer-costs 1 -1 -1 3`
 so the planes stay solid"). State what was *not* checked: impedance (needs a stackup), thermal, EMC, mechanical fit.
+
+## 4. Fixing the hygiene findings
+When asked to fix them, use the DRC-checked tools instead of hand-editing copper (each keeps a change only if KiCad
+DRC with zones refilled is no worse; backup in `.backups/`; close the board in KiCad first):
+- dangling stubs, duplicate segments: `${CLAUDE_PLUGIN_ROOT}/tools/pcb-tidy.py FILE.kicad_pcb prune`
+- acute corners: `pcb-tidy.py FILE.kicad_pcb corners`
+- power widths / sub-floor tracks: `pcb-tidy.py FILE.kicad_pcb widen /LX1=0.4 /VSYS=0.4 +3V3=0.127`
+- pair skew (after `pcb-quality.py` reports the signal-path mismatch): `pcb-tidy.py FILE.kicad_pcb meander /USB_D- --add 2.1`
+Each DRC run takes seconds; a full pass is a few minutes. Re-run `pcb-quality.py` afterwards and report what was left
+and why (a segment that cannot widen without a clearance error is reported with its coordinates).
