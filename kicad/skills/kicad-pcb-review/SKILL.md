@@ -38,6 +38,10 @@ Electrical:
   (`decoupling`). A cap on the far side of the board, or tied in through a long thin track, does little.
 - **Few vias on critical nets**: USB, crystal and clock nets stay on one layer; a layer change needs a GND via beside it
   (`critical-vias`, `diff-pairs`).
+- **No wandering signals**: there is no standard cap on via count (IPC sets none; JLC doesn't charge for standard
+  vias). Judge each net against the fewest vias it needs: 0 when all its SMD pads are on one side, 1 when they are on
+  both. Fast buses (QSPI, SDIO, SPI clocks) get no extra, other signals up to 2 extra (`signal-vias`). Extra vias on a
+  slow net are untidy rather than harmful; on a fast bus each adds ~0.5-1 nH, a stub and two plane holes.
 - **Crystal quiet**: load caps right at the crystal pins, GND around it, no other nets under or through it (`crystal`).
 - **Differential pairs coupled and matched**: constant gap, short uncoupled legs, length matched across series resistors
   (`diff-pairs`). Rough tolerance: USB full speed is forgiving (a few mm); USB high speed, Ethernet and MIPI are not
