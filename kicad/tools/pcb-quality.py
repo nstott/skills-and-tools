@@ -12,6 +12,8 @@ Each finding names the part / net and board coordinates (mm). Checks (thresholds
   diff-pairs     P/N nets (D+/D-, _P/_N, DP/DM): signal-path length mismatch (connector pad to IC pad through series
                  parts; ESD taps and connector A/B bridges are not skew), vias, layer changes
   critical-vias  vias on clock / crystal / diff-pair nets
+  signal-vias    vias on each other signal net beyond what it needs (0 if all its SMD pads are on one side, 1 if on
+                 both): more than +2 is flagged, and any extra on fast buses (QSPI, SDIO, SPI clocks)
   power-width    narrowest track on each power net against a width floor (0.25 mm, or --power-width)
   fab-margin     vias, drills and tracks below the fab tier's standard floor (cost or yield risk)
   via-in-pad     vias inside an SMD pad (same-net vias in an exposed/thermal pad are the intended thermal vias)
@@ -48,6 +50,8 @@ CFG = dict(
     xtal_cap_warn=2.5,                      # mm, crystal pad to its load cap
     dp_mismatch_warn=1.0, dp_mismatch_bad=3.0,  # mm, diff pair length difference
     dp_vias_warn=2,                         # vias per diff-pair member
+    sig_vias_extra=2,                       # vias beyond the minimum on an ordinary signal net
+    fast_vias_extra=0,                      # ... on a fast bus net (QSPI, SDIO, SPI clocks)
     crit_vias_warn=2,                       # vias on a crystal / clock net
     power_width=0.25,                       # mm, minimum track width on power nets
     stitch_per_cm2=1.0,                     # GND vias per cm^2 below this is flagged
@@ -62,6 +66,8 @@ POWER_NAME = re.compile(r'^[+-]|VCC|VDD|VBUS|VSYS|VIN|VOUT|VBAT|AVDD|DVDD|IOVDD|
 GND_NAME = re.compile(r'^(GND|AGND|DGND|PGND|GNDA|GNDD|VSS|0V)$', re.I)
 CLOCK_NAME = re.compile(r'XIN|XOUT|XTAL|OSC|CLK|SCLK|SCK', re.I)
 NOT_CLOCK = re.compile(r'SWCLK|TCK', re.I)               # slow debug clocks
+CONTROL_SUFFIX = re.compile(r'_(EN|SENSE|PG|PGOOD|GOOD|OK|DET|FB|SNS)$', re.I)   # signals named after a rail
+FAST_BUS = re.compile(r'QSPI|SDIO|SD_(CLK|CMD|D\d)|SPI\d?_(SCK|CLK|MOSI|MISO)|EMMC', re.I)
 SIGNAL_LIKE = re.compile(r'SENSE|_EN$|^EN|DET|_FB|ADC|REF|PGOOD|PG$', re.I)  # named like a rail, carries no current
 REG_PIN = re.compile(r'VIN|VOUT|PVIN|VREG_VIN|VCC_?IN|^IN$|^OUT$', re.I)   # regulator input/output pins
 
@@ -476,6 +482,29 @@ def main():
     for n in sorted(xnet_all | {n for n in nets if n and CLOCK_NAME.search(n) and not NOT_CLOCK.search(n)}):
         if nvias[n] > (0 if n in xnet_all else CFG['crit_vias_warn']):
             flag('critical-vias', 'warn', '%s: %d via(s) on a clock/crystal net' % (n, nvias[n]))
+
+    # --- vias on every other signal net, against the fewest it needs
+    plane_nets = {z['net'] for z in B['zones'] if not z['keepout']}
+    pair_nets = {n for pr in pairs for n in pr} | {n for c in merged for grp in c for n in grp}
+    clockish = xnet_all | {n for n in nets if n and CLOCK_NAME.search(n) and not NOT_CLOCK.search(n)}
+    sides = defaultdict(set)
+    for f in fps:
+        for p in f['pads']:
+            if p['net'] and p['kind'] == 'smd':
+                sides[p['net']].add(f['layer'])
+    over = []
+    for n in sorted(nets):
+        if (not n or n in gnd_nets or n in plane_nets or n in pair_nets or n in clockish
+                or (POWER_NAME.search(n) and not CONTROL_SUFFIX.search(n)) or n.startswith('unconnected-')):
+            continue
+        need = 1 if len(sides[n]) > 1 else 0
+        extra = CFG['fast_vias_extra'] if FAST_BUS.search(n) else CFG['sig_vias_extra']
+        if nvias[n] > need + extra:
+            over.append((nvias[n] - need, n, need))
+    for ex, n, need in sorted(over, reverse=True)[:15]:
+        flag('signal-vias', 'warn', '%s: %d vias, needs %d%s' % (n, nvias[n], need, ' (fast bus: keep it on one layer per side)' if FAST_BUS.search(n) else ''))
+    if len(over) > 15:
+        flag('signal-vias', 'warn', '... %d more nets with extra vias' % (len(over) - 15))
 
     # --- power widths
     # supply rails: driven by a power_out pin, an inductor, a diode or a fuse, or named like a rail; nets fed only
