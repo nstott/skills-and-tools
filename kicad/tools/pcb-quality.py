@@ -13,7 +13,8 @@ Each finding names the part / net and board coordinates (mm). Checks (thresholds
                  parts; ESD taps and connector A/B bridges are not skew), vias, layer changes
   critical-vias  vias on clock / crystal / diff-pair nets
   signal-vias    vias on each other signal net beyond what it needs (0 if all its SMD pads are on one side, 1 if on
-                 both): more than +2 is flagged, and any extra on fast buses (QSPI, SDIO, SPI clocks)
+                 both): more than +2 is flagged; on fast buses (QSPI, SDIO, SPI clocks) any extra on the path
+                 between the net's two ICs (vias on slow side branches such as pull-ups are not counted)
   power-width    narrowest track on each power net against a width floor (0.25 mm, or --power-width)
   fab-margin     vias, drills and tracks below the fab tier's standard floor (cost or yield risk)
   via-in-pad     vias inside an SMD pad (same-net vias in an exposed/thermal pad are the intended thermal vias)
@@ -369,18 +370,11 @@ def main():
                 seen.add(x)
                 todo += list(link.get(x, ()))
         return frozenset(seen)
-    def signal_path(chain_nets):
-        """Copper length of the signal path from the connector pad to the IC pad (shortest route through the
-        net's tracks, vias and 2-pad series parts), so ESD taps and connector A/B bridges don't count as skew.
-        None when either end or a connected path is missing."""
+    def copper_graph(chain_nets, via_w=0.0, series_except=None):
+        """Graph of the nets' copper: nodes are track ends (per layer) and ('pad', ref, num); edges are tracks (their
+        length), vias (via_w per layer change; a track may end anywhere inside the via), T-junctions, pads touching
+        track ends, and 2-pad series parts whose both pads are on the nets (except series_except)."""
         on = [(f, p) for f in fps for p in f['pads'] if p['net'] in chain_nets]
-        conn = [(f, p) for f, p in on if re.match(r'^(J|P|CN|USB)\d', f['ref'])]
-        ics = [f for f in fps if len(f['pads']) > 2 and not re.match(r'^(J|P|CN|USB)\d', f['ref'])
-               and any(p['net'] in chain_nets for p in f['pads'])]
-        if not conn or not ics:
-            return None
-        ic = max(ics, key=lambda f: len(f['pads']))
-        far = [(f, p) for f, p in on if f is ic]
         key = lambda x, y, l: (round(x, 3), round(y, 3), l)
         adj = defaultdict(list)
         def edge(a, b, w):
@@ -396,7 +390,7 @@ def main():
             if v['net'] in chain_nets:
                 pts = [key(v['x'], v['y'], l) for l in cu]
                 for q in pts[1:]:
-                    edge(pts[0], q, 0)
+                    edge(pts[0], q, via_w)
                 seg_ends = set(ends[v['net']])
                 for e in seg_ends:  # a track may end anywhere inside the via's copper
                     if math.hypot(e[0] - v['x'], e[1] - v['y']) <= v['size'] / 2:
@@ -423,21 +417,59 @@ def main():
                 if e[2] in pl and abs(e[0] - p['x']) <= r and abs(e[1] - p['y']) <= r:
                     edge(('pad', f['ref'], p['num']), e, 0)
         for f in fps:
-            if len(f['pads']) == 2 and {p['net'] for p in f['pads']} <= chain_nets and f is not ic:
+            if len(f['pads']) == 2 and {p['net'] for p in f['pads']} <= chain_nets and f is not series_except:
                 edge(('pad', f['ref'], f['pads'][0]['num']), ('pad', f['ref'], f['pads'][1]['num']), 0)
+        return adj, on
+
+    def shortest(adj, src):
+        d0 = {src: 0.0}
+        q = [(0.0, 0, src)]
+        while q:
+            d, _, u = heapq.heappop(q)
+            if d > d0.get(u, 1e9):
+                continue
+            for w_, c in adj[u]:
+                if d + c < d0.get(w_, 1e9):
+                    d0[w_] = d + c
+                    heapq.heappush(q, (d + c, id(w_), w_))
+        return d0
+
+    def ic_path_vias(net):
+        """Fewest vias on any copper path between the net's two largest ICs (None if it has fewer than two)."""
+        ics = sorted({f['ref']: f for f in fps if re.match(r'^(U|IC)\d', f['ref']) and len(f['pads']) > 2
+                      and any(p['net'] == net for p in f['pads'])}.values(), key=lambda f: -len(f['pads']))
+        if len(ics) < 2:
+            return None
+        a, b = ics[0], ics[1]
+        adj, _ = copper_graph({net}, via_w=1000.0)
+        best = None
+        for p in a['pads']:
+            if p['net'] != net:
+                continue
+            d0 = shortest(adj, ('pad', a['ref'], p['num']))
+            for q in b['pads']:
+                d = d0.get(('pad', b['ref'], q['num'])) if q['net'] == net else None
+                if d is not None and (best is None or d < best):
+                    best = d
+        return (int(best // 1000), a['ref'], b['ref']) if best is not None else None
+
+    def signal_path(chain_nets):
+        """Copper length of the signal path from the connector pad to the IC pad (shortest route through the
+        net's tracks, vias and 2-pad series parts), so ESD taps and connector A/B bridges don't count as skew.
+        None when either end or a connected path is missing."""
+        on = [(f, p) for f in fps for p in f['pads'] if p['net'] in chain_nets]
+        conn = [(f, p) for f, p in on if re.match(r'^(J|P|CN|USB)\d', f['ref'])]
+        ics = [f for f in fps if len(f['pads']) > 2 and not re.match(r'^(J|P|CN|USB)\d', f['ref'])
+               and any(p['net'] in chain_nets for p in f['pads'])]
+        if not conn or not ics:
+            return None
+        ic = max(ics, key=lambda f: len(f['pads']))
+        far = [(f, p) for f, p in on if f is ic]
+        adj, _ = copper_graph(chain_nets, 0.0, series_except=ic)
 
         best = None
         for f, p in conn:
-            d0 = {('pad', f['ref'], p['num']): 0.0}
-            q = [(0.0, 0, ('pad', f['ref'], p['num']))]
-            while q:
-                d, _, u = heapq.heappop(q)
-                if d > d0.get(u, 1e9):
-                    continue
-                for w_, c in adj[u]:
-                    if d + c < d0.get(w_, 1e9):
-                        d0[w_] = d + c
-                        heapq.heappush(q, (d + c, id(w_), w_))
+            d0 = shortest(adj, ('pad', f['ref'], p['num']))
             for g, pp in far:
                 d = d0.get(('pad', g['ref'], pp['num']))
                 if d is not None and (best is None or d < best):
@@ -498,11 +530,17 @@ def main():
                 or (POWER_NAME.search(n) and not CONTROL_SUFFIX.search(n)) or n.startswith('unconnected-')):
             continue
         need = 1 if len(sides[n]) > 1 else 0
-        extra = CFG['fast_vias_extra'] if FAST_BUS.search(n) else CFG['sig_vias_extra']
-        if nvias[n] > need + extra:
-            over.append((nvias[n] - need, n, need))
-    for ex, n, need in sorted(over, reverse=True)[:15]:
-        flag('signal-vias', 'warn', '%s: %d vias, needs %d%s' % (n, nvias[n], need, ' (fast bus: keep it on one layer per side)' if FAST_BUS.search(n) else ''))
+        if FAST_BUS.search(n):
+            # a fast bus is judged on the path between its two ICs; vias on slow side branches (pull-ups, a boot
+            # button) don't sit in the signal's path
+            ip = ic_path_vias(n)
+            used, where = (ip[0], ' between %s and %s' % (ip[1], ip[2])) if ip else (nvias[n], '')
+            if used > need + CFG['fast_vias_extra']:
+                over.append((used - need, n, '%d vias%s, needs %d (fast bus: keep it on one layer per side)' % (used, where, need)))
+        elif nvias[n] > need + CFG['sig_vias_extra']:
+            over.append((nvias[n] - need, n, '%d vias, needs %d' % (nvias[n], need)))
+    for ex, n, msg in sorted(over, reverse=True)[:15]:
+        flag('signal-vias', 'warn', '%s: %s' % (n, msg))
     if len(over) > 15:
         flag('signal-vias', 'warn', '... %d more nets with extra vias' % (len(over) - 15))
 
