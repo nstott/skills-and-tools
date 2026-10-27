@@ -23,6 +23,9 @@ Work through these in order; report findings with ref/pin, don't just say "looks
   check against their datasheets. Confirm each candidate in the render before reporting it.
 - Schematic vs PCB (when a `.kicad_pcb` exists): `${CLAUDE_PLUGIN_ROOT}/tools/sch-pcb-diff.py FILE.kicad_sch FILE.kicad_pcb` - parts,
   values, footprints and the net on every pad must agree; any difference means "Update PCB from Schematic" is pending.
+  It does not compare fields, attributes or library ids; also run `kcli pcb drc --schematic-parity FILE.kicad_pcb`
+  (0 parity items). Missing fields, `lib:` prefixes and DNP flags are fixed by `pcb-sync-from-sch.py`; power flags
+  need a `#` reference (`#FLG01`), and board-only parts (mounting holes) the `board_only` attribute.
 
 ## 2. Design review checklist
 - **Power**: every supply pin on its rail; each rail has a source (power_out pin or PWR_FLAG); regulator input/output
