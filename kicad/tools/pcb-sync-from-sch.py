@@ -4,7 +4,10 @@
     pcb-sync-from-sch.py FILE.kicad_sch FILE.kicad_pcb [--place REF=X,Y[,ROT] ...] [--dry-run] [--force]
 
 For every schematic part (matched to a footprint by the symbol uuid in the footprint's `(path ...)`, else by
-reference): updates the Value, and sets the net on every pad. A part with no footprint on the board is added from
+reference): updates the Value, sets the net on every pad, and carries over what KiCad's own update does: the
+footprint's library id (`lib:name` as the symbol gives it), every other symbol field (LCSC, MPN, Voltage, ...) as a
+footprint property, and the DNP / exclude-from-BOM attributes (so `kcli pcb drc --schematic-parity` is clean and
+`pcb export pos --exclude-dnp` leaves DNP parts out). A part with no footprint on the board is added from
 its footprint library (project fp-lib-table first, then KiCad's own) at --place X,Y,ROT (default: just left of
 the board outline). Net names come from `kicad-cli sch export netlist`, so they match what KiCad itself writes
 (`/GP0`, `Net-(U1-XOUT)`, `unconnected-(J1-SBU1-PadA8)`). Copper follows the pads: when every pad of an old net
@@ -57,8 +60,11 @@ def netlist(sch):
         lib = c.find('libsource')
         if ref.startswith('#') or (lib is not None and lib.get('part') == 'PWR_FLAG'):
             continue
+        fields = {f.get('name'): f.text or '' for f in (c.find('fields') if c.find('fields') is not None else [])}
+        props = {q.get('name') for q in c.findall('property')}
         parts[ref] = dict(value=c.findtext('value') or '', footprint=c.findtext('footprint') or '',
-                          uuid=(c.findtext('tstamps') or '').split('/')[-1], pads={})
+                          uuid=(c.findtext('tstamps') or '').split('/')[-1], pads={}, fields=fields,
+                          dnp='dnp' in props, exclude_bom='exclude_from_bom' in props)
     for n in root.find('nets'):
         for nd in n:
             if nd.get('ref') in parts:
@@ -346,6 +352,62 @@ def prune_dangling(text, net, report):
     return text
 
 
+SKIP_FIELDS = {'Reference', 'Value', 'Footprint'}
+
+
+def sync_meta(block, p, report, ref):
+    """What KiCad's Update PCB also carries over besides nets and value: the footprint's library id (lib:name, as
+    the symbol gives it), every other symbol field as a footprint property (hidden on Fab when new), and the
+    DNP / exclude-from-BOM attributes."""
+    out = block
+    m = re.match(r'\(footprint "([^"]+)"', out)
+    if m and p['footprint'] and m.group(1) != p['footprint'] and m.group(1).split(':')[-1] == p['footprint'].split(':')[-1]:
+        out = out[:m.start(1)] + p['footprint'] + out[m.end(1):]
+        report.append('%s footprint id: %s -> %s' % (ref, m.group(1), p['footprint']))
+    back = '(layer "B.Cu")' in out.split('\n')[1] if '\n' in out else False
+    for name, val in sorted(p['fields'].items()):
+        if name in SKIP_FIELDS:
+            continue
+        esc = val.replace('\\', '\\\\').replace('"', '\\"')
+        pm = re.search(r'\(property "%s" "((?:[^"\\]|\\.)*)"' % re.escape(name), out)
+        if pm:
+            if pm.group(1) != esc:
+                out = out[:pm.start(1)] + esc + out[pm.end(1):]
+                report.append('%s field %s: %r -> %r' % (ref, name, pm.group(1), val))
+            continue
+        vi = out.find('\t\t(property "Value"')
+        if vi < 0:
+            continue
+        depth, j = 0, vi + 2
+        while j < len(out):
+            if out[j] == '(':
+                depth += 1
+            elif out[j] == ')':
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        prop = ('\n\t\t(property "%s" "%s"\n\t\t\t(at 0 0 0)\n\t\t\t(layer "%s")\n\t\t\t(hide yes)\n'
+                '\t\t\t(uuid "%s")\n\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1 1)\n\t\t\t\t\t(thickness 0.15)\n'
+                '\t\t\t\t)%s\n\t\t\t)\n\t\t)') % (name, esc, 'B.Fab' if back else 'F.Fab', new_uuid(),
+                                         '\n\t\t\t\t(justify mirror)' if back else '')
+        out = out[:j + 1] + prop + out[j + 1:]
+        report.append('%s field %s added: %r' % (ref, name, val))
+    am = re.search(r'\n\t\t\(attr([^)]*)\)', out)
+    want = []
+    if p['exclude_bom']:            # KiCad compares each flag on its own; DNP does not imply it
+        want.append('exclude_from_bom')
+    if p['dnp']:
+        want.append('dnp')
+    if am:
+        toks = [t for t in am.group(1).split() if t not in ('exclude_from_bom', 'dnp')] + want
+        new = '\n\t\t(attr %s)' % ' '.join(toks)
+        if new != am.group(0):
+            out = out[:am.start()] + new + out[am.end():]
+            report.append('%s attributes: %s' % (ref, ' '.join(toks)))
+    return out
+
+
 def main():
     a = sys.argv[1:]
     dry, force = '--dry-run' in a, '--force' in a
@@ -390,7 +452,7 @@ def main():
             x, y, rot = place.get(ref, (95.0, 105.0 + 6 * len(added), 0))
             blk = footprint_from_mod(p['footprint'], ref, p['value'], p['uuid'], (x, y, rot), d, p['pads'])
             blk, ch = set_pad_nets(blk.lstrip('\t'), p['pads'])
-            blk = '\t' + blk
+            blk = '\t' + sync_meta(blk.lstrip('\t'), p, [], ref)
             added.append((ref, p['footprint'], (x, y, rot), len(ch)))
             report.append('ADD %s %s at %s,%s rot %s (%d pads)' % (ref, p['footprint'], x, y, rot, len(ch)))
             edits.append(('add', blk))
@@ -410,6 +472,7 @@ def main():
             x, y, rot = float(at.group(1)), float(at.group(2)), float(at.group(3) or 0)
             blk = footprint_from_mod(p['footprint'], ref, p['value'], p['uuid'], (x, y, rot), d, p['pads'])
             blk, ch = set_pad_nets(blk.lstrip('\t'), p['pads'])
+            blk = sync_meta(blk, p, [], ref)
             report.append('SWAP %s %s -> %s at %s,%s rot %s (%d pads)' % (ref, have_fp, p['footprint'], x, y, rot, len(ch)))
             edits.append(('rep', sp, blk))
             continue
@@ -420,6 +483,7 @@ def main():
             b2 = b2[:vm.start(1)] + p['value'] + b2[vm.end(1):]
         if ch:
             report.append('%s pads: %s' % (ref, '; '.join(ch)))
+        b2 = sync_meta(b2, p, report, ref)
         if b2 != b:
             edits.append(('rep', sp, b2))
     for rec in spans:
