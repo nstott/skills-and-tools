@@ -6,8 +6,10 @@
 Each finding names the part / net and board coordinates (mm). Checks (thresholds in CFG below):
   decoupling     every IC power pin has a cap (one pad on that net, the other on GND) within 2 mm; >5 mm is bad; a cap
                  on the other side needs a same-net via within 1 mm of the pin's pad and a GND via (or GND pour) at its
-                 GND pad (edge-to-edge distances)
-  switching      regulator loop: inductor and the bulk caps (>=1 uF) on the regulator's power pins sit close to it
+                 GND pad (edge-to-edge distances); a regulator's control supply tied to its VIN (VINA, AVIN) is
+                 reported as info with the VIN cap's distance instead
+  switching      regulator loop: inductor and the bulk caps (>=1 uF) on the regulator's VIN / VOUT pins (matched by
+                 whole pin name, so VINA is not an input) sit close to it
   crystal        crystal load caps close to the crystal; no foreign-net copper inside the crystal's footprint area
   diff-pairs     P/N nets (D+/D-, _P/_N, DP/DM): signal-path length mismatch (connector pad to IC pad through series
                  parts; ESD taps and connector A/B bridges are not skew), vias, layer changes
@@ -70,7 +72,15 @@ NOT_CLOCK = re.compile(r'SWCLK|TCK', re.I)               # slow debug clocks
 CONTROL_SUFFIX = re.compile(r'_(EN|SENSE|PG|PGOOD|GOOD|OK|DET|FB|SNS)$', re.I)   # signals named after a rail
 FAST_BUS = re.compile(r'QSPI|SDIO|SD_(CLK|CMD|D\d)|SPI\d?_(SCK|CLK|MOSI|MISO)|EMMC', re.I)
 SIGNAL_LIKE = re.compile(r'SENSE|_EN$|^EN|DET|_FB|ADC|REF|PGOOD|PG$', re.I)  # named like a rail, carries no current
-REG_PIN = re.compile(r'VIN|VOUT|PVIN|VREG_VIN|VCC_?IN|^IN$|^OUT$', re.I)   # regulator input/output pins
+REG_PIN = re.compile(r'^(P?VIN|VOUT|VREG_VIN|VCC_?IN|IN|OUT)\d?$', re.I)   # regulator input/output pins (whole name)
+# a regulator's control-circuit supply, tied to its VIN and served by the VIN cap (RT6150 VINA, TPS6xxxx AVIN)
+CTRL_SUPPLY = re.compile(r'^(VINA|AVIN|VIN_?A|AVCC|VCCA)$', re.I)
+
+
+def pin_name(pfun, pnum):
+    """Netlist pinfunction without the `_<pin number>` suffix KiCad adds (`VINA_8` -> `VINA`)."""
+    pfun = pfun or ''
+    return pfun[:-len(pnum) - 1] if pnum and pfun.endswith('_' + pnum) else pfun
 
 
 def num(s):
@@ -241,6 +251,16 @@ def main():
             if not is_power_pad(f, p):
                 continue
             cands = [(pad_edge_dist(p, cp), c['ref']) for c in decaps_for(p['net']) for cp in c['pads'] if cp['net'] == p['net']]
+            # a regulator's control supply (VINA) tied to its VIN: the input cap belongs at VIN, which `switching` checks
+            if types is not None and CTRL_SUPPLY.match(pin_name(types.get((f['ref'], p['num']), ('', ''))[1], p['num'])):
+                vin = [q for q in f['pads'] if q is not p and q['net'] == p['net']
+                       and REG_PIN.match(pin_name(types.get((f['ref'], q['num']), ('', ''))[1], q['num']))]
+                if vin and cands:
+                    d, cref = min((pad_edge_dist(vin[0], cp), c['ref']) for c in decaps_for(p['net']) for cp in c['pads'] if cp['net'] == p['net'])
+                    flag('decoupling', 'info', '%s pin %s (%s) is a control supply tied to VIN pin %s: served by %s, %.1f mm from '
+                         'VIN (check the datasheet if it wants its own cap or RC filter)' % (f['ref'], p['num'], p['net'], vin[0]['num'], cref, d),
+                         (p['x'], p['y']))
+                    continue
             if not cands:
                 flag('decoupling', 'bad', '%s pin %s (%s): no decoupling cap on this net' % (f['ref'], p['num'], p['net']), (p['x'], p['y']))
                 continue
@@ -289,7 +309,7 @@ def main():
                     continue
                 if types is not None:
                     ptype, pfun = types.get((f['ref'], p['num']), ('', ''))
-                    if ptype not in ('power_in', 'power_out') or not REG_PIN.search(pfun):
+                    if ptype not in ('power_in', 'power_out') or not REG_PIN.match(pin_name(pfun, p['num'])):
                         continue
                 elif not is_power_pad(f, p):
                     continue
