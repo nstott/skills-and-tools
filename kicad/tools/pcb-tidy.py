@@ -11,7 +11,9 @@
   prune    delete what DRC calls dangling (track_dangling / via_dangling, matched by net, layer and length), repeated
            until none is left, plus duplicate and zero-length segments. The usual leftovers of auto-routing and rip-up.
   corners  straighten acute (<90 deg) corners: the two segments meeting at the corner become one A-B segment, kept
-           only where DRC stays clean. Corners of a net inside its own pour are left alone (as pcb-quality does).
+           only where DRC stays clean. At a via (two branches leaving it in a V) it drops a dead branch (its far end
+           touches no pad, via or track), or feeds one branch from the other's far end. Corners of a net inside its own pour are left
+           alone (as pcb-quality does).
   widen    raise tracks of each NET to WIDTH (power nets, LX nodes, sub-floor tracks); a segment DRC objects to is
            retried at half the step (0.15 -> 0.4 tries 0.275, 0.21, ...), so it ends as wide as its neighbours allow.
   meander  add MM of length to NET (the shorter member of a pair) with square bumps on its longest straight segments,
@@ -194,7 +196,7 @@ def acute_corners(t):
     vias = {(round(i['at'][0], 4), round(i['at'][1], 4)) for i in items(t) if i['kind'] == 'via'}
     out = []
     for (n, ly, x, y), vs in ends.items():
-        if len(vs) != 2 or (x, y) in vias:
+        if len(vs) != 2:
             continue
         (s1, A), (s2, B) = vs
         ax, ay, bx, by = A[0] - x, A[1] - y, B[0] - x, B[1] - y
@@ -202,14 +204,30 @@ def acute_corners(t):
         if la > 1e-6 and lb > 1e-6:
             ang = math.degrees(math.acos(max(-1, min(1, (ax * bx + ay * by) / (la * lb)))))
             if ang < 89.5:
-                out.append((n, ly, (x, y), ang, s1, s2, A, B))
+                out.append((n, ly, (x, y), ang, s1, s2, A, B, (x, y) in vias))
     return out
 
 
-def straighten(t, c):
-    n, ly, P, ang, s1, s2, A, B = c
+def fixes(t, c):
+    """Candidate edits for one corner. A plain corner becomes one A-B segment. At a via the two tracks are branches
+    (merging them would cut the via off): drop one (a dead stub, or a segment doubling back over the other), or feed
+    one branch from the far end of the other instead of from the via."""
+    n, ly, P, ang, s1, s2, A, B, at_via = c
     w = max(s1['width'], s2['width'])
-    return edit(t, [s1['span'], s2['span']], seg_text(A, B, w, n, ly) if math.dist(A, B) > 1e-4 else '')
+    if not at_via:
+        return [edit(t, [s1['span'], s2['span']], seg_text(A, B, w, n, ly) if math.dist(A, B) > 1e-4 else '')]
+    its, pads = items(t), smd_pads(t)
+
+    def dead(s, far):
+        # nothing but this corner uses the far end: no pad, via or other track there (DRC alone would accept dropping
+        # a cap's feed that is still joined the long way round)
+        return not (any(p['net'] == n and p['layer'] == ly and in_pad(far, p) for p in pads)
+                    or any(i['kind'] == 'via' and i['net'] == n and math.dist(i['at'], far) < i['size'] / 2 for i in its)
+                    or any(i['kind'] == 'segment' and i['span'] != s['span'] and i['net'] == n and i['layer'] == ly
+                           and min(math.dist(i['a'], far), math.dist(i['b'], far)) < 1e-3 for i in its))
+    out = [edit(t, [s['span']]) for s, far in ((s1, A), (s2, B)) if dead(s, far)]
+    return out + [edit(t, [s2['span']], seg_text(A, B, s2['width'], n, ly)),
+                  edit(t, [s1['span']], seg_text(B, A, s1['width'], n, ly))]
 
 
 def do_corners(t, drc, base, log):
@@ -223,10 +241,12 @@ def do_corners(t, drc, base, log):
             break
         done = False
         for c in cs:
-            t2 = straighten(t, c)
-            if no_worse(drc, drc.run(t2), base):
+            # an edit must remove a corner without making another one, and keep DRC no worse
+            t2 = next((t2 for t2 in fixes(t, c) if len(acute_corners(t2)) < len(cs) and no_worse(drc, drc.run(t2), base)), None)
+            if t2:
                 t = t2
-                log.append('straightened %.0f deg corner on %s (%s) at (%.2f, %.2f)' % (c[3], c[0], c[1], *c[2]))
+                log.append('straightened %.0f deg corner%s on %s (%s) at (%.2f, %.2f)'
+                           % (c[3], ' at a via' if c[8] else '', c[0], c[1], *c[2]))
                 done = True
                 break
             log.append('kept %.0f deg corner on %s (%s) at (%.2f, %.2f): DRC objects' % (c[3], c[0], c[1], *c[2]))
