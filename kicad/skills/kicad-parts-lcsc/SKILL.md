@@ -35,5 +35,10 @@ assembled `DNP`.
 
 ## Check
 `tools/bom-check.sh FILE.kicad_sch` (run in the project dir so project libraries resolve) prints the grouped BOM
-and lists parts without an LCSC number. Pull the JLCPCB-format CSV from the same `kicad-cli sch export bom` call
-(fields `Reference,Value,Footprint,LCSC`) when ordering.
+and lists parts without an LCSC number.
+
+When ordering, write the assembly files with `tools/jlc-fab.py FILE.kicad_pcb fab/` (BOM and CPL), not a hand-made
+CSV. It writes every designator out in full, because JLC reads a range such as `C1-C4` as a single name: those parts
+are then missing from both the BOM and the CPL, and JLC's "data missing" dialog drops them from assembly. It also
+checks that the BOM and CPL list the same designators. Run `jlc-fab.py --check BOM.csv CPL.csv` on any pair before
+you upload it.
