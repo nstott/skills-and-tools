@@ -6,14 +6,16 @@
 Exit 0 when the pair is clean, 1 on any problem.
 
 BOM: `kicad-cli sch export bom` (DNP excluded, run from the schematic's folder so project libraries resolve), one row
-per Value + Footprint + LCSC, every designator spelled out. JLC does not expand ranges: "C1-C4" is read as one
-designator that matches nothing, and those parts are silently dropped from assembly. Parts with no LCSC number
+per LCSC number, every designator spelled out. JLC does not expand ranges: "C1-C4" is read as one
+designator that matches nothing, and those parts are silently dropped from assembly. It also refuses two rows on
+the same LCSC part ("Multiple lines in the BOM have been matched to the same part"), so parts that share an LCSC
+number but differ in footprint or value text go on one row, with the footprints / values joined by " / ". Parts with no LCSC number
 (test points, mounting holes, anything you place yourself) are left out and listed.
 CPL: `kicad-cli pcb export pos` (both sides, DNP excluded), JLC columns, mm, KiCad's rotation (check it in JLC's
 preview). Both files CRLF, as JLC's own templates.
 
-Check: no designator ranges or duplicates, every BOM row has an LCSC number, and the BOM and CPL list the same
-designators (a part in one and not the other is not assembled).
+Check: no designator ranges or duplicates, every BOM row has an LCSC number and no two rows share one, and the
+BOM and CPL list the same designators (a part in one and not the other is not assembled).
 """
 import csv
 import os
@@ -49,8 +51,14 @@ def bom_rows(sch):
         if not lcsc.strip():
             skipped.append(ref)
             continue
-        groups.setdefault((val, fp, lcsc.strip()), []).append(ref)
-    out = [(val, sorted(refs, key=ref_key), fp, lcsc) for (val, fp, lcsc), refs in groups.items()]
+        groups.setdefault(lcsc.strip(), []).append((ref, val, fp))
+    # one row per LCSC part: JLC matches every row to a part and refuses two rows on the same one (C6,C7 on a
+    # modified 0402 footprint and C8,C25 on the stock one are still one 4.7 uF part)
+    join = lambda xs: ' / '.join(dict.fromkeys(xs))
+    out = []
+    for lcsc, parts in groups.items():
+        parts.sort(key=lambda p: ref_key(p[0]))
+        out.append((join(p[1] for p in parts), [p[0] for p in parts], join(p[2] for p in parts), lcsc))
     return sorted(out, key=lambda r: ref_key(r[1][0])), sorted(skipped, key=ref_key)
 
 
@@ -95,6 +103,9 @@ def check(bp, cp):
             problems.append('BOM row %s has no LCSC number' % r[di])
         problems += ['BOM designator "%s" is a range: JLC reads it as one name and assembles none of them' % d
                      for d in refs if re.search(r'\d\s*-\s*[A-Za-z]*\d', d)]
+    lc = [r[li].strip() for r in bom[1:] if r[li].strip()]
+    problems += ['LCSC %s is on more than one BOM row: JLC matches only one of them' % x
+                 for x in sorted({x for x in lc if lc.count(x) > 1})]
     c = [r[cd].strip() for r in cpl[1:] if r]
     for name, lst in (('BOM', b), ('CPL', c)):
         dup = sorted({d for d in lst if lst.count(d) > 1}, key=ref_key)
