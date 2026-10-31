@@ -141,8 +141,11 @@ def load(pcb):
             poly = re.search(r'\(polygon\s*\(pts((?:\s*\(xy [-\d.]+ [-\d.]+\))+)', b)
             pts = [(num(a_), num(c_)) for a_, c_ in re.findall(r'\(xy ([-\d.]+) ([-\d.]+)\)', poly.group(1))] if poly else []
             area = abs(sum(pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1] for i in range(len(pts)))) / 2 if pts else 0
+            # filled pieces (KiCad fractures holes away, so each is a simple polygon): what the pour really covers
+            fills = [(fl, [(num(a_), num(c_)) for a_, c_ in re.findall(r'\(xy ([-\d.]+) ([-\d.]+)\)', fp_)])
+                     for fl, fp_ in re.findall(r'\(filled_polygon\s*\(layer "([^"]+)"\)\s*\(pts((?:\s*\(xy [-\d.]+ [-\d.]+\))+)', b)]
             zones.append(dict(net=n.group(1) if n else '', layers=re.findall(r'"([^"]+)"', ly), area=area, keepout='(keepout' in b,
-                              pts=pts))
+                              pts=pts, fills=fills))
         elif h == 'gr_rect' and 'Edge.Cuts' in b:
             s = re.search(r'\(start ([-\d.]+) ([-\d.]+)\)', b)
             e = re.search(r'\(end ([-\d.]+) ([-\d.]+)\)', b)
@@ -179,6 +182,18 @@ def in_poly(pt, poly):
         if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
             inside = not inside
     return inside
+
+
+def on_tied_pour(z, layer, pad, vias):
+    """The pad sits on a pour of its net that reaches the plane: the filled piece under the pad holds a via of that net.
+    A piece cut off by other tracks (an island around the pad alone) does not count. Unfilled zone: outline only."""
+    if z['net'] != pad['net'] or layer not in z['layers']:
+        return False
+    pieces = [pts for ly, pts in z.get('fills', []) if ly == layer]
+    if not pieces:
+        return bool(z['pts']) and in_poly((pad['x'], pad['y']), z['pts'])
+    return any(in_poly((pad['x'], pad['y']), pts) and any(v['net'] == pad['net'] and in_poly((v['x'], v['y']), pts) for v in vias)
+               for pts in pieces)
 
 
 def dist(a, b):
@@ -284,8 +299,7 @@ def main():
                     gv = min((max(0.0, dist(gp[0], v) - v['size'] / 2 - min(gp[0]['w'], gp[0]['h']) / 2)
                               for v in B['vias'] if v['net'] == gp[0]['net']), default=99)
                     clay = c['layer']
-                    on_pour = any(z['net'] == gp[0]['net'] and clay in z['layers'] and z['pts'] and in_poly((gp[0]['x'], gp[0]['y']), z['pts'])
-                                  for z in B['zones'] if not z['keepout'])
+                    on_pour = any(on_tied_pour(z, clay, gp[0], B['vias']) for z in B['zones'] if not z['keepout'])
                     if gv > CFG['decap_via'] and not on_pour:
                         flag('decoupling', 'warn', '%s pin %s: cap %s GND pad has no GND via within %.1f mm (nearest %.1f) and no '
                              'GND pour' % (f['ref'], p['num'], cref, CFG['decap_via'], gv), (gp[0]['x'], gp[0]['y']))
